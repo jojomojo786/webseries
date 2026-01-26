@@ -211,10 +211,35 @@ def get_torrent_quality(name: str) -> str:
     return "unknown"
 
 
+def extract_episode_range(name: str) -> str:
+    """Extract episode range from torrent name for grouping"""
+    name_lower = name.lower()
+
+    # Match patterns like:
+    # - "EP (01-08)" -> "01-08"
+    # - "EP01-08" -> "01-08"
+    # - "S01E01" -> "01"
+    # - "E01" -> "01"
+    # - "EP01" -> "01"
+    # - No episode info -> "full"
+
+    # Match EP (XX-YY) pattern
+    match = re.search(r'ep\s*\((\d+(?:-\d+)?)\)', name_lower)
+    if match:
+        return match.group(1)
+
+    # Match EPXX-YY or S01EXX-YY pattern
+    match = re.search(r'(?:s\d+)?ep?(\d+(?:-\d+)?)', name_lower)
+    if match:
+        return match.group(1)
+
+    return "full"
+
+
 def filter_highest_quality(torrents: list[dict]) -> tuple[list[dict], bool]:
     """
     Filter torrents to keep best quality (1080p preferred, exclude 4K).
-    Keeps ALL torrents of the best available quality (for series with multiple episode batches).
+    Keeps only the LARGEST torrent per episode range at the best quality.
 
     Returns:
         tuple: (filtered_torrents, is_4k_only) - is_4k_only is True if only 4K was available
@@ -238,8 +263,22 @@ def filter_highest_quality(torrents: list[dict]) -> tuple[list[dict], bool]:
     for quality in quality_priority:
         quality_torrents = [t for t in non_4k_torrents if get_torrent_quality(t.get("name", "")) == quality]
         if quality_torrents:
-            # Return ALL torrents of this quality (for multiple episode batches)
-            return sorted(quality_torrents, key=lambda x: x.get("size_bytes", 0), reverse=True), False
+            # Group by episode range and keep only largest per range
+            episode_groups: dict[str, list[dict]] = {}
+            for t in quality_torrents:
+                ep_range = extract_episode_range(t.get("name", ""))
+                if ep_range not in episode_groups:
+                    episode_groups[ep_range] = []
+                episode_groups[ep_range].append(t)
+
+            # Keep only the largest torrent per episode range
+            filtered = []
+            for ep_range, group in episode_groups.items():
+                largest = max(group, key=lambda x: x.get("size_bytes", 0))
+                filtered.append(largest)
+
+            # Sort by size descending
+            return sorted(filtered, key=lambda x: x.get("size_bytes", 0), reverse=True), False
 
     # Fallback: return all non-4K torrents sorted by size
     return sorted(non_4k_torrents, key=lambda x: x.get("size_bytes", 0), reverse=True), False
