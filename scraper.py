@@ -369,6 +369,8 @@ def main():
     parser.add_argument("--no-torrents", action="store_true", help="Skip scraping individual topic pages for torrents")
     parser.add_argument("--all-torrents", "-a", action="store_true", help="Include all torrents instead of just the highest quality")
     parser.add_argument("--output", type=str, default="data/webseries.json", help="Output JSON file path")
+    parser.add_argument("--db", action="store_true", help="Save to MySQL database")
+    parser.add_argument("--no-json", action="store_true", help="Don't save to JSON file (use with --db)")
 
     args = parser.parse_args()
 
@@ -379,7 +381,15 @@ def main():
     )
 
     if data:
-        save_to_json(data, args.output)
+        # Save to JSON (unless --no-json is specified)
+        if not args.no_json:
+            save_to_json(data, args.output)
+
+        # Save to database (if --db is specified)
+        if args.db:
+            from db import save_to_database
+            save_to_database(data)
+
         print(f"\nScraping complete! Total items: {len(data)}")
     else:
         print("No data scraped")
