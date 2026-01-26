@@ -174,13 +174,28 @@ def format_size(size_bytes: int) -> str:
     return f"{size_bytes} B"
 
 
+def is_4k_torrent(name: str) -> bool:
+    """Check if torrent is 4K/2160p quality"""
+    name_lower = name.lower()
+    # Patterns that indicate 4K quality
+    patterns_4k = ["4k", "2160p", "uhd", "4k sdr", "4k hdr"]
+    return any(p in name_lower for p in patterns_4k)
+
+
 def filter_highest_quality(torrents: list[dict]) -> list[dict]:
-    """Filter to keep only the highest quality (largest size) torrent"""
+    """Filter to keep the best 1080p/720p torrent (exclude 4K)"""
     if not torrents:
         return []
 
-    # Sort by size descending and return the largest
-    sorted_torrents = sorted(torrents, key=lambda x: x.get("size_bytes", 0), reverse=True)
+    # First, filter out 4K torrents - we want 1080p or 720p
+    non_4k_torrents = [t for t in torrents if not is_4k_torrent(t.get("name", ""))]
+
+    # If all torrents are 4K, fall back to original list
+    if not non_4k_torrents:
+        non_4k_torrents = torrents
+
+    # Sort by size descending and return the largest (best quality among 1080p/720p)
+    sorted_torrents = sorted(non_4k_torrents, key=lambda x: x.get("size_bytes", 0), reverse=True)
     largest = sorted_torrents[0]
 
     # Only return if it has a valid size
@@ -188,11 +203,11 @@ def filter_highest_quality(torrents: list[dict]) -> list[dict]:
         return [largest]
 
     # If no size info, return first magnet link
-    for t in torrents:
+    for t in non_4k_torrents:
         if t["type"] == "magnet":
             return [t]
 
-    return [torrents[0]] if torrents else []
+    return [non_4k_torrents[0]] if non_4k_torrents else []
 
 
 def get_total_pages(soup: BeautifulSoup) -> int:
