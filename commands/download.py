@@ -129,7 +129,13 @@ def get_torrents_from_db(series_id=None, season_id=None, quality=None, limit=Non
             params.append(limit)
 
         cursor.execute(query, tuple(params) if params else ())
-        return cursor.fetchall()
+        torrents = cursor.fetchall()
+
+        # Extract info_hash from magnet links for duplicate detection
+        for t in torrents:
+            t['info_hash'] = extract_info_hash(t.get('link', ''))
+
+        return torrents
 
     except Error as e:
         logger.error(f"Database error: {e}")
@@ -138,6 +144,18 @@ def get_torrents_from_db(series_id=None, season_id=None, quality=None, limit=Non
     finally:
         cursor.close()
         conn.close()
+
+
+def extract_info_hash(magnet_link: str) -> str:
+    """
+    Extract info_hash from magnet link
+    Format: magnet:?xt=urn:btih:<hash>&...
+    """
+    import re
+    match = re.search(r'xt=urn:btih:([a-fA-F0-9]{40})', magnet_link)
+    if match:
+        return match.group(1).lower()
+    return ''
 
 
 def update_torrent_status(torrent_id: int, status: int) -> bool:
@@ -408,12 +426,14 @@ def download(ctx, host, port, username, password, series_id, season_id, quality,
 
     for t in torrents:
         magnet_link = t['link']
+        info_hash = t.get('info_hash', '')
         name = f"{t['series_title']} S{t['season_number']} - {t['name']}"
 
         try:
             # Refresh torrents list and check if torrent already exists
             torrents_info = client.torrents_info()
-            existing = [tr for tr in torrents_info if tr['magnet_uri'] == magnet_link]
+            # Compare by info_hash instead of full magnet URI
+            existing = [tr for tr in torrents_info if tr.get('hash', '') == info_hash]
 
             if existing:
                 logger.info(f"Skipping (already in qBittorrent): {name[:60]}...")
