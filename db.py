@@ -149,59 +149,50 @@ def extract_episode_count_from_torrents(torrents: list[dict]) -> int:
     return total_episodes
 
 
-def save_to_database(data: list[dict]) -> tuple[int, int]:
+def save_to_database(data: list[dict]) -> tuple[int, int, int]:
     """
-    Save scraped data to database
+    Save scraped data to database with normalized structure:
+    series → seasons → torrents
 
     Args:
         data: List of scraped items with title, url, torrents
 
     Returns:
-        tuple: (series_count, torrent_count) inserted
+        tuple: (series_count, season_count, torrent_count) inserted
     """
     conn = get_connection()
     if not conn:
-        return 0, 0
+        return 0, 0, 0
 
     cursor = conn.cursor()
     series_count = 0
+    season_count = 0
     torrent_count = 0
 
     try:
         for item in data:
             # Extract metadata
             year = extract_year_from_title(item.get('title', ''))
-            season = extract_season_from_title(item.get('title', ''))
-
+            season_number = extract_season_from_title(item.get('title', ''))
             torrents = item.get('torrents', [])
 
-            # Calculate episode count from torrent names (not just counting torrents)
+            # Calculate episode count from torrent names
             episode_count = extract_episode_count_from_torrents(torrents)
             total_size_bytes = sum(t.get('size_bytes', 0) for t in torrents)
             total_size_human = format_size(total_size_bytes) if total_size_bytes > 0 else None
             quality = get_best_quality(torrents)
 
-            # Insert or update series with metadata
+            # Step 1: Insert or update series (base info only)
             cursor.execute('''
-                INSERT INTO series (title, url, created_at, year, season, episode_count, total_size_human, quality)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO series (title, url, created_at)
+                VALUES (%s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     title = VALUES(title),
-                    created_at = VALUES(created_at),
-                    year = VALUES(year),
-                    season = VALUES(season),
-                    episode_count = VALUES(episode_count),
-                    total_size_human = VALUES(total_size_human),
-                    quality = VALUES(quality)
+                    created_at = VALUES(created_at)
             ''', (
                 item['title'],
                 item['url'],
-                datetime.fromisoformat(item['scraped_at']) if item.get('scraped_at') else datetime.now(),
-                year,
-                season,
-                episode_count,
-                total_size_human,
-                quality
+                datetime.fromisoformat(item['scraped_at']) if item.get('scraped_at') else datetime.now()
             ))
 
             # Get series ID
@@ -213,43 +204,74 @@ def save_to_database(data: list[dict]) -> tuple[int, int]:
                 result = cursor.fetchone()
                 series_id = result[0] if result else None
 
-            if series_id and torrents:
-                # Delete existing torrents for this series (to avoid duplicates on re-scrape)
-                cursor.execute('DELETE FROM torrents WHERE series_id = %s', (series_id,))
+            if series_id:
+                # Step 2: Insert or update season
+                cursor.execute('''
+                    INSERT INTO seasons (series_id, season_number, year, episode_count, total_size_human, quality, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        year = VALUES(year),
+                        episode_count = VALUES(episode_count),
+                        total_size_human = VALUES(total_size_human),
+                        quality = VALUES(quality),
+                        updated_at = CURRENT_TIMESTAMP
+                ''', (
+                    series_id,
+                    season_number,
+                    year,
+                    episode_count,
+                    total_size_human,
+                    quality,
+                    datetime.fromisoformat(item['scraped_at']) if item.get('scraped_at') else datetime.now()
+                ))
 
-                # Insert torrents
-                for torrent in torrents:
-                    # Determine quality from name
-                    name_lower = torrent.get('name', '').lower()
-                    if '2160p' in name_lower or '4k' in name_lower:
-                        torrent_quality = '4k'
-                    elif '1080p' in name_lower:
-                        torrent_quality = '1080p'
-                    elif '720p' in name_lower:
-                        torrent_quality = '720p'
-                    elif '480p' in name_lower:
-                        torrent_quality = '480p'
-                    elif '360p' in name_lower:
-                        torrent_quality = '360p'
-                    else:
-                        torrent_quality = 'unknown'
+                # Get season ID
+                if cursor.lastrowid:
+                    season_id = cursor.lastrowid
+                    season_count += 1
+                else:
+                    cursor.execute('SELECT id FROM seasons WHERE series_id = %s AND season_number = %s', (series_id, season_number))
+                    result = cursor.fetchone()
+                    season_id = result[0] if result else None
 
-                    cursor.execute('''
-                        INSERT INTO torrents (series_id, type, name, link, size_bytes, size_human, quality)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ''', (
-                        series_id,
-                        torrent.get('type', 'magnet'),
-                        torrent.get('name', ''),
-                        torrent.get('link', ''),
-                        torrent.get('size_bytes', 0),
-                        torrent.get('size_human', 'unknown'),
-                        torrent_quality
-                    ))
-                    torrent_count += 1
+                if season_id and torrents:
+                    # Step 3: Delete existing torrents for this season
+                    cursor.execute('DELETE FROM torrents WHERE season_id = %s', (season_id,))
+
+                    # Step 4: Insert torrents linked to season
+                    for torrent in torrents:
+                        # Determine quality from name
+                        name_lower = torrent.get('name', '').lower()
+                        if '2160p' in name_lower or '4k' in name_lower:
+                            torrent_quality = '4k'
+                        elif '1080p' in name_lower:
+                            torrent_quality = '1080p'
+                        elif '720p' in name_lower:
+                            torrent_quality = '720p'
+                        elif '480p' in name_lower:
+                            torrent_quality = '480p'
+                        elif '360p' in name_lower:
+                            torrent_quality = '360p'
+                        else:
+                            torrent_quality = 'unknown'
+
+                        cursor.execute('''
+                            INSERT INTO torrents (series_id, season_id, type, name, link, size_bytes, size_human, quality)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        ''', (
+                            series_id,
+                            season_id,
+                            torrent.get('type', 'magnet'),
+                            torrent.get('name', ''),
+                            torrent.get('link', ''),
+                            torrent.get('size_bytes', 0),
+                            torrent.get('size_human', 'unknown'),
+                            torrent_quality
+                        ))
+                        torrent_count += 1
 
         conn.commit()
-        print(f"Database: Saved {series_count} new series, {torrent_count} torrents")
+        print(f"Database: Saved {series_count} series, {season_count} seasons, {torrent_count} torrents")
 
     except Error as e:
         print(f"Database error: {e}")
@@ -259,7 +281,7 @@ def save_to_database(data: list[dict]) -> tuple[int, int]:
         cursor.close()
         conn.close()
 
-    return series_count, torrent_count
+    return series_count, season_count, torrent_count
 
 
 def get_all_series() -> list[dict]:
@@ -272,11 +294,11 @@ def get_all_series() -> list[dict]:
 
     try:
         cursor.execute('''
-            SELECT s.*, COUNT(t.id) as torrent_count
+            SELECT s.*, COUNT(DISTINCT seas.id) as season_count
             FROM series s
-            LEFT JOIN torrents t ON s.id = t.series_id
+            LEFT JOIN seasons seas ON s.id = seas.series_id
             GROUP BY s.id
-            ORDER BY s.scraped_at DESC
+            ORDER BY s.created_at DESC
         ''')
         return cursor.fetchall()
 
@@ -286,7 +308,7 @@ def get_all_series() -> list[dict]:
 
 
 def get_series_with_torrents(series_id: int) -> dict | None:
-    """Get a series with all its torrents"""
+    """Get a series with all its seasons and torrents"""
     conn = get_connection()
     if not conn:
         return None
@@ -298,8 +320,14 @@ def get_series_with_torrents(series_id: int) -> dict | None:
         series = cursor.fetchone()
 
         if series:
-            cursor.execute('SELECT * FROM torrents WHERE series_id = %s ORDER BY size_bytes DESC', (series_id,))
-            series['torrents'] = cursor.fetchall()
+            # Get all seasons for this series
+            cursor.execute('SELECT * FROM seasons WHERE series_id = %s ORDER BY season_number', (series_id,))
+            series['seasons'] = cursor.fetchall()
+
+            # Get torrents for each season
+            for season in series['seasons']:
+                cursor.execute('SELECT * FROM torrents WHERE season_id = %s ORDER BY size_bytes DESC', (season['id'],))
+                season['torrents'] = cursor.fetchall()
 
         return series
 
@@ -321,6 +349,9 @@ def get_stats() -> dict:
 
         cursor.execute('SELECT COUNT(*) as count FROM series')
         stats['total_series'] = cursor.fetchone()['count']
+
+        cursor.execute('SELECT COUNT(*) as count FROM seasons')
+        stats['total_seasons'] = cursor.fetchone()['count']
 
         cursor.execute('SELECT COUNT(*) as count FROM torrents')
         stats['total_torrents'] = cursor.fetchone()['count']
@@ -344,16 +375,18 @@ def clear_database() -> bool:
     cursor = conn.cursor()
 
     try:
-        # Delete all torrents first (foreign key constraint)
+        # Delete in order due to foreign key constraints
         cursor.execute('DELETE FROM torrents')
         torrents_deleted = cursor.rowcount
 
-        # Delete all series
+        cursor.execute('DELETE FROM seasons')
+        seasons_deleted = cursor.rowcount
+
         cursor.execute('DELETE FROM series')
         series_deleted = cursor.rowcount
 
         conn.commit()
-        print(f"Cleared {series_deleted} series and {torrents_deleted} torrents from database")
+        print(f"Cleared {series_deleted} series, {seasons_deleted} seasons, and {torrents_deleted} torrents from database")
         return True
 
     except Error as e:
