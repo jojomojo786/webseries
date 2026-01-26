@@ -104,6 +104,16 @@ def extract_season_episode(filename: str) -> tuple:
     if match:
         return (int(match.group(1)), int(match.group(2)))
 
+    # Try S01 EP01 pattern (with space)
+    match = re.search(r'[Ss](\d+)\s*[Ee][Pp]\s*(\d+)', filename)
+    if match:
+        return (int(match.group(1)), int(match.group(2)))
+
+    # Try EP01 pattern (just episode)
+    match = re.search(r'[Ee][Pp]\s*(\d+)', filename)
+    if match:
+        return (1, int(match.group(1)))
+
     # Try 1x01 pattern
     match = re.search(r'(\d+)x(\d+)', filename)
     if match:
