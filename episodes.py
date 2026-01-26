@@ -347,8 +347,9 @@ def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[
 
         # Find matching torrent by episode number
         torrent_id = None
+        torrent_quality = None
         cursor.execute('''
-            SELECT id, name FROM torrents
+            SELECT id, name, quality FROM torrents
             WHERE season_id = %s
         ''', (season_id,))
         torrents = cursor.fetchall()
@@ -358,6 +359,7 @@ def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[
             _, t_ep = extract_season_episode(torrent['name'])
             if t_ep == episode_num:
                 torrent_id = torrent['id']
+                torrent_quality = torrent['quality']
                 break
 
             # Check for batch torrent pattern "EP (01-03)" or "EP(01-03)"
@@ -367,7 +369,11 @@ def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[
                 end_ep = int(batch_match.group(2))
                 if start_ep <= episode_num <= end_ep:
                     torrent_id = torrent['id']
+                    torrent_quality = torrent['quality']
                     break
+
+        # Use torrent quality if available, otherwise fall back to extracted quality
+        quality = torrent_quality if torrent_quality else ep['quality']
 
         # Check if episode already exists
         cursor.execute(
@@ -392,23 +398,23 @@ def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[
                         cursor.execute('''
                             INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality, torrent_id, duration_min)
                             VALUES (%s, %s, 1, %s, %s, %s, %s, %s)
-                        ''', (season_id, episode_num, ep['path'], ep['size_human'], ep['quality'], torrent_id, duration))
+                        ''', (season_id, episode_num, ep['path'], ep['size_human'], quality, torrent_id, duration))
                     else:
                         cursor.execute('''
                             INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality, torrent_id)
                             VALUES (%s, %s, 1, %s, %s, %s, %s)
-                        ''', (season_id, episode_num, ep['path'], ep['size_human'], ep['quality'], torrent_id))
+                        ''', (season_id, episode_num, ep['path'], ep['size_human'], quality, torrent_id))
                 else:
                     if duration is not None:
                         cursor.execute('''
                             INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality, duration_min)
                             VALUES (%s, %s, 1, %s, %s, %s, %s)
-                        ''', (season_id, episode_num, ep['path'], ep['size_human'], ep['quality'], duration))
+                        ''', (season_id, episode_num, ep['path'], ep['size_human'], quality, duration))
                     else:
                         cursor.execute('''
                             INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality)
                             VALUES (%s, %s, 1, %s, %s, %s)
-                        ''', (season_id, episode_num, ep['path'], ep['size_human'], ep['quality']))
+                        ''', (season_id, episode_num, ep['path'], ep['size_human'], quality))
                 conn.commit()
                 imported += 1
                 logger.info(f"Imported: S{season_num:02d}E{episode_num:02d}")
