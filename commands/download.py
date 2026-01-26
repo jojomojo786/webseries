@@ -325,6 +325,7 @@ def watch_and_move_completed(client, temp_dir=DEFAULT_TEMP_DIR, completed_dir=DE
 @click.option('--season-id', type=int, help='Download torrents for specific season ID')
 @click.option('--quality', help='Filter by quality (e.g., 1080p, 720p)')
 @click.option('--limit', type=int, help='Maximum number of torrents to download')
+@click.option('--max-active', default=5, type=int, help='Maximum active torrents in qBittorrent')
 @click.option('--save-path', help='Custom save path for downloads (default: ./downloads/temp)')
 @click.option('--temp-dir', default=DEFAULT_TEMP_DIR, help='Temp download folder')
 @click.option('--completed-dir', default=DEFAULT_COMPLETED_DIR, help='Completed downloads folder')
@@ -332,7 +333,7 @@ def watch_and_move_completed(client, temp_dir=DEFAULT_TEMP_DIR, completed_dir=DE
 @click.option('--dry-run', is_flag=True, help='Show what would be downloaded without actually downloading')
 @click.pass_context
 def download(ctx, host, port, username, password, series_id, season_id, quality,
-             limit, save_path, temp_dir, completed_dir, category, dry_run):
+             limit, max_active, save_path, temp_dir, completed_dir, category, dry_run):
     """Download torrents from database using qBittorrent"""
     config = ctx.obj.get('config', {})
 
@@ -342,6 +343,7 @@ def download(ctx, host, port, username, password, series_id, season_id, quality,
     port = port or qb_config.get('port', 8090)
     username = username or qb_config.get('username')
     password = password or qb_config.get('password')
+    max_active = max_active or qb_config.get('max_active', 5)
 
     # Default to temp directory if no custom save path
     if not save_path:
@@ -374,6 +376,15 @@ def download(ctx, host, port, username, password, series_id, season_id, quality,
     if not client:
         return
 
+    # Check current active torrents
+    torrents_info = client.torrents_info()
+    active_count = len(torrents_info)
+    logger.info(f"Current active torrents in qBittorrent: {active_count}/{max_active}")
+
+    if active_count >= max_active:
+        logger.warning(f"Maximum active torrents ({max_active}) reached. Use move-completed to clear finished torrents.")
+        return
+
     # Download torrents
     success_count = 0
     skip_count = 0
@@ -384,7 +395,7 @@ def download(ctx, host, port, username, password, series_id, season_id, quality,
         name = f"{t['series_title']} S{t['season_number']} - {t['name']}"
 
         try:
-            # Check if torrent already exists in qBittorrent
+            # Refresh torrents list and check if torrent already exists
             torrents_info = client.torrents_info()
             existing = [tr for tr in torrents_info if tr['magnet_uri'] == magnet_link]
 
@@ -392,6 +403,11 @@ def download(ctx, host, port, username, password, series_id, season_id, quality,
                 logger.info(f"Skipping (already in qBittorrent): {name[:60]}...")
                 skip_count += 1
                 continue
+
+            # Check if we've reached max active
+            if len(torrents_info) >= max_active:
+                logger.info(f"Maximum active torrents ({max_active}) reached. Stopping.")
+                break
 
             # Add torrent
             options = {'save_path': save_path}
@@ -404,6 +420,9 @@ def download(ctx, host, port, username, password, series_id, season_id, quality,
             )
             logger.info(f"Added: {name[:60]}... ({t['quality']})")
             success_count += 1
+
+            # Small delay to let qBittorrent register the new torrent
+            time.sleep(0.1)
 
         except Exception as e:
             logger.error(f"Failed to add '{name[:50]}...': {e}")

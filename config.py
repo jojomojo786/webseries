@@ -22,6 +22,7 @@ DEFAULT_CONFIG = {
         'save_path': os.environ.get('QBITTORRENT_SAVE_PATH', ''),
         'temp_dir': os.environ.get('QBITTORRENT_TEMP_DIR', '/home/webseries/downloads/temp'),
         'completed_dir': os.environ.get('QBITTORRENT_COMPLETED_DIR', '/home/webseries/downloads/completed'),
+        'max_active': int(os.environ.get('QBITTORRENT_MAX_ACTIVE', 5)),
         'category': os.environ.get('QBITTORRENT_CATEGORY', '')
     },
     'scraper': {
