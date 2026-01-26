@@ -53,6 +53,7 @@ def scan_completed_folder(completed_dir: str = DEFAULT_COMPLETED_DIR) -> list[di
                 season, episode = extract_season_episode(filename)
                 quality = extract_quality(filename)
                 size = os.path.getsize(filepath)
+                duration = get_video_duration(filepath)
 
                 episodes.append({
                     'series': series_name,
@@ -61,8 +62,10 @@ def scan_completed_folder(completed_dir: str = DEFAULT_COMPLETED_DIR) -> list[di
                     'quality': quality,
                     'size': size,
                     'size_human': format_size(size),
+                    'duration': duration,
                     'filename': filename,
-                    'path': rel_path
+                    'path': rel_path,
+                    'full_path': filepath
                 })
 
     return episodes
@@ -146,6 +149,51 @@ def format_size(size_bytes: int) -> str:
             return f"{size_bytes:.0f} {unit}"
         size_bytes /= 1024
     return f"{size_bytes:.0f} PB"
+
+
+def get_video_duration(filepath: str) -> int:
+    """
+    Get video duration in seconds using ffprobe
+
+    Args:
+        filepath: Path to video file
+
+    Returns:
+        int: Duration in seconds, or None if failed
+    """
+    import subprocess
+    import json
+
+    try:
+        result = subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+             '-of', 'json', filepath],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            duration = float(data.get('format', {}).get('duration', 0))
+            return int(duration) if duration > 0 else None
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, KeyError, ValueError) as e:
+        logger.debug(f"Failed to get duration for {filepath}: {e}")
+    except FileNotFoundError:
+        logger.warning("ffprobe not found. Install ffmpeg to get video durations.")
+
+    return None
+
+
+def format_duration(seconds: int) -> str:
+    """Format seconds to human readable duration (e.g., '45:30', '1:23:45')"""
+    if not seconds:
+        return 'N/A'
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    if hours > 0:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
 
 
 def get_episodes_from_db(series_filter: str = None, season_filter: int = None) -> list[dict]:
@@ -336,20 +384,34 @@ def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[
 
         if dry_run:
             t_info = f", torrent_id={torrent_id}" if torrent_id else ""
-            logger.info(f"Would insert: S{season_num:02d}E{episode_num:02d} -> season_id={season_id}{t_info}")
+            d_info = f", duration={ep.get('duration')}" if ep.get('duration') else ""
+            logger.info(f"Would insert: S{season_num:02d}E{episode_num:02d} -> season_id={season_id}{t_info}{d_info}")
             imported += 1
         else:
             try:
+                duration = ep.get('duration')
                 if torrent_id:
-                    cursor.execute('''
-                        INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality, torrent_id)
-                        VALUES (%s, %s, 'available', %s, %s, %s, %s)
-                    ''', (season_id, episode_num, ep['path'], ep['size_human'], ep['quality'], torrent_id))
+                    if duration is not None:
+                        cursor.execute('''
+                            INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality, torrent_id, duration)
+                            VALUES (%s, %s, 'available', %s, %s, %s, %s, %s)
+                        ''', (season_id, episode_num, ep['path'], ep['size_human'], ep['quality'], torrent_id, duration))
+                    else:
+                        cursor.execute('''
+                            INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality, torrent_id)
+                            VALUES (%s, %s, 'available', %s, %s, %s, %s)
+                        ''', (season_id, episode_num, ep['path'], ep['size_human'], ep['quality'], torrent_id))
                 else:
-                    cursor.execute('''
-                        INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality)
-                        VALUES (%s, %s, 'available', %s, %s, %s)
-                    ''', (season_id, episode_num, ep['path'], ep['size_human'], ep['quality']))
+                    if duration is not None:
+                        cursor.execute('''
+                            INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality, duration)
+                            VALUES (%s, %s, 'available', %s, %s, %s, %s)
+                        ''', (season_id, episode_num, ep['path'], ep['size_human'], ep['quality'], duration))
+                    else:
+                        cursor.execute('''
+                            INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality)
+                            VALUES (%s, %s, 'available', %s, %s, %s)
+                        ''', (season_id, episode_num, ep['path'], ep['size_human'], ep['quality']))
                 conn.commit()
                 imported += 1
                 logger.info(f"Imported: S{season_num:02d}E{episode_num:02d}")
