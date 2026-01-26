@@ -7,6 +7,17 @@ database:
   # Format: mysql://user:password@host:port/database
   url: ${DATABASE_URL}
 
+# qBittorrent configuration
+qbittorrent:
+  host: ${QBITTORRENT_HOST:-localhost}
+  port: ${QBITTORRENT_PORT:-8090}
+  username: ${QBITTORRENT_USERNAME}
+  password: ${QBITTORRENT_PASSWORD}
+  save_path: ${QBITTORRENT_SAVE_PATH}
+  temp_dir: ${QBITTORRENT_TEMP_DIR:-/home/webseries/downloads/temp}
+  completed_dir: ${QBITTORRENT_COMPLETED_DIR:-/home/webseries/downloads/completed}
+  category: ${QBITTORRENT_CATEGORY}
+
 # Scraper settings
 scraper:
   base_url: "https://www.1tamilmv.rsvp"

@@ -14,6 +14,16 @@ DEFAULT_CONFIG = {
     'database': {
         'url': os.environ.get('DATABASE_URL', '')
     },
+    'qbittorrent': {
+        'host': os.environ.get('QBITTORRENT_HOST', 'localhost'),
+        'port': int(os.environ.get('QBITTORRENT_PORT', 8090)),
+        'username': os.environ.get('QBITTORRENT_USERNAME', ''),
+        'password': os.environ.get('QBITTORRENT_PASSWORD', ''),
+        'save_path': os.environ.get('QBITTORRENT_SAVE_PATH', ''),
+        'temp_dir': os.environ.get('QBITTORRENT_TEMP_DIR', '/home/webseries/downloads/temp'),
+        'completed_dir': os.environ.get('QBITTORRENT_COMPLETED_DIR', '/home/webseries/downloads/completed'),
+        'category': os.environ.get('QBITTORRENT_CATEGORY', '')
+    },
     'scraper': {
         'base_url': 'https://www.1tamilmv.rsvp',
         'pages': None,  # None = unlimited

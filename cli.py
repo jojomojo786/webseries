@@ -29,10 +29,13 @@ def cli(ctx, config, debug):
 # Import subcommands
 from commands.run import run
 from commands.db import db_group
+from commands.download import download, move_completed
 
 # Register commands
 cli.add_command(run)
 cli.add_command(db_group)
+cli.add_command(download)
+cli.add_command(move_completed)
 
 
 if __name__ == '__main__':

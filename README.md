@@ -9,16 +9,18 @@ A Python scraper for extracting web series titles and torrent links from the 1Ta
 - Python 3.8 or higher
 - MySQL/MariaDB database
 - pip (Python package manager)
+- qBittorrent with Web UI enabled (for download feature)
 
 ## Features
 
-- **Unified CLI**: Single command with subcommands for scraping and database management
+- **Unified CLI**: Single command with subcommands for scraping, database management, and downloads
 - **Colored Logging**: Console and file logging with automatic rotation (10MB)
 - **Configuration**: YAML-based config with environment variable support
 - **Database Storage**: MySQL integration with normalized schema (series → seasons → torrents)
 - **Quality Filtering**: Automatically selects highest quality (1080p preferred, 4K excluded)
 - **Smart Parsing**: Extracts seasons, episodes, file sizes, and quality from torrent names
 - **Database Tools**: Integrity checks, orphan fixing, statistics, and data clearing
+- **qBittorrent Integration**: Download torrents directly to temp/completed folders
 - **Backward Compatible**: Legacy `scraper.py` still works with argparse
 
 ## Installation
@@ -42,8 +44,22 @@ Set up your environment variables:
 
 ```bash
 # Create a .env file (use .env.example as template)
-echo "DATABASE_URL=mysql://user:password@host:port/database" > .env
+cat > .env << EOF
+DATABASE_URL=mysql://user:password@host:port/database
+QBITTORRENT_HOST=localhost
+QBITTORRENT_PORT=8090
+QBITTORRENT_USERNAME=admin
+QBITTORRENT_PASSWORD=adminadmin
+QBITTORRENT_TEMP_DIR=/home/webseries/downloads/temp
+QBITTORRENT_COMPLETED_DIR=/home/webseries/downloads/completed
+EOF
 ```
+
+Enable qBittorrent Web UI:
+1. Open qBittorrent
+2. Go to Tools → Options → Web UI
+3. Enable Web UI (default port: 8090)
+4. Set username and password
 
 ## Usage
 
@@ -70,6 +86,92 @@ The `scraper` command provides a unified interface to all functionality:
 ./scraper db check         # Verify database integrity
 ./scraper db fix-orphans   # Fix orphaned torrent records
 ./scraper db clear         # Clear all data (with confirmation)
+```
+
+### Downloading Torrents
+
+```bash
+# Download torrents (saves to temp folder)
+python3 cli.py download --limit 1
+
+# Download with filters
+python3 cli.py download --quality 1080p --limit 5
+python3 cli.py download --series-id 1
+python3 cli.py download --season-id 5
+
+# Move completed torrents to completed folder
+python3 cli.py move-completed
+
+# Watch mode - automatically move completed torrents
+python3 cli.py move-completed --watch --interval 30
+
+# Dry run to preview
+python3 cli.py download --dry-run
+```
+
+### Download Workflow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          TORRENT DOWNLOAD WORKFLOW                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────┐     ┌──────────────┐     ┌─────────────────┐
+  │   DATABASE  │────▶│   DOWNLOAD   │────▶│ qBittorrent     │
+  │             │     │   COMMAND    │     │ (Port 8090)     │
+  │ ┌─────────┐ │     │              │     │                 │
+  │ │torrents │ │     │ • Fetch from │     │ ┌─────────────┐ │
+  │ │ table   │ │     │   DB        │     │ │Downloads to │ │
+  │ │         │ │     │ • Filter     │     │ │  temp folder│ │
+  │ │link col │ │     │ • Add to qB  │     │ └─────────────┘ │
+  │ │(magnets)│ │     └──────────────┘     │        │        │
+  └─────────────┘                           │        ▼        │
+                                            │   ┌──────────┐  │
+                                            │   │  temp/   │  │
+                                            │   │          │  │
+                                            │   │ S01E01.mk│ │
+                                            │   └──────────┘  │
+                                            │        │        │
+                                            │        │ 100%   │
+                                            │        ▼        │
+                                            │   ┌──────────┐  │
+       ┌───────────────────────────────────▶│completed/│  │
+       │                                    │          │  │
+       │  move-completed                    │ S01E01.mk│  │
+       │  command                           └──────────┘  │
+       │                                                  │
+       └──────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            COMMAND FLOW                                      │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  1. SCRAPING                    2. DOWNLOADING              3. COMPLETION
+  ┌─────────────┐              ┌──────────────┐            ┌─────────────┐
+  │ cli.py run  │              │ cli.py       │            │ cli.py      │
+  │              │              │ download      │            │ move-       │
+  │ Scrapes      │─────────────▶│ --limit 1    │───────────▶│ completed   │
+  │ forum → DB   │              │              │            │             │
+  └─────────────┘              └──────────────┘            └─────────────┘
+        │                              │                         │
+        ▼                              ▼                         ▼
+   Stores magnet              Adds magnet to             Moves files
+   links in DB                qBittorrent (temp)         temp→completed
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        DIRECTORY STRUCTURE                                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  /home/webseries/downloads/
+  ├── temp/              # Active downloads go here
+  │   ├── Series.S01E01.1080p.mkv
+  │   └── Series.S01E02.1080p.mkv  ← downloading...
+  │
+  └── completed/         # Completed files are moved here
+      ├── Series.S01E01.1080p.mkv
+      └── Series.S01E02.1080p.mkv  ← done!
+
 ```
 
 **Optional: Make it available system-wide** (run from any directory):
@@ -169,6 +271,12 @@ torrents (id, series_id, season_id, type, name, link, size_bytes, size_human, qu
 ### Database Connection Issues
 - Verify your `DATABASE_URL` in `.env` is correct
 - Ensure MySQL service is running: `sudo systemctl status mysql`
+
+### qBittorrent Connection Issues
+- Verify qBittorrent Web UI is enabled (Tools → Options → Web UI)
+- Check the port (default: 8090)
+- Verify username/password credentials
+- Test connection: `curl http://localhost:8090/api/v2/app/version`
 
 ### Permission Denied on Symlink
 - Use `sudo` when creating the symlink
