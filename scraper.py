@@ -198,33 +198,38 @@ def get_torrent_quality(name: str) -> str:
     return "unknown"
 
 
-def filter_highest_quality(torrents: list[dict]) -> list[dict]:
+def filter_highest_quality(torrents: list[dict]) -> tuple[list[dict], bool]:
     """
     Filter torrents to keep best quality (1080p preferred, exclude 4K).
     Keeps ALL torrents of the best available quality (for series with multiple episode batches).
+
+    Returns:
+        tuple: (filtered_torrents, is_4k_only) - is_4k_only is True if only 4K was available
     """
     if not torrents:
-        return []
+        return [], False
 
     # First, filter out 4K torrents
     non_4k_torrents = [t for t in torrents if not is_4k_torrent(t.get("name", ""))]
 
-    # If all torrents are 4K, fall back to original list
+    # If all torrents are 4K, return empty and flag it
     if not non_4k_torrents:
-        non_4k_torrents = torrents
+        # Return the 4K links for display but flag as 4K-only
+        sorted_4k = sorted(torrents, key=lambda x: x.get("size_bytes", 0), reverse=True)
+        return sorted_4k, True
 
     # Group torrents by quality
-    quality_priority = ["1080p", "720p", "480p", "360p", "unknown", "4k"]
+    quality_priority = ["1080p", "720p", "480p", "360p", "unknown"]
 
     # Find the best available quality
     for quality in quality_priority:
         quality_torrents = [t for t in non_4k_torrents if get_torrent_quality(t.get("name", "")) == quality]
         if quality_torrents:
             # Return ALL torrents of this quality (for multiple episode batches)
-            return sorted(quality_torrents, key=lambda x: x.get("size_bytes", 0), reverse=True)
+            return sorted(quality_torrents, key=lambda x: x.get("size_bytes", 0), reverse=True), False
 
     # Fallback: return all non-4K torrents sorted by size
-    return sorted(non_4k_torrents, key=lambda x: x.get("size_bytes", 0), reverse=True)
+    return sorted(non_4k_torrents, key=lambda x: x.get("size_bytes", 0), reverse=True), False
 
 
 def get_total_pages(soup: BeautifulSoup) -> int:
@@ -308,10 +313,14 @@ def scrape_forum(max_pages: int = None, include_torrents: bool = True, highest_q
 
                     # Filter for highest quality if requested
                     if highest_quality and torrents:
-                        torrents = filter_highest_quality(torrents)
+                        torrents, is_4k_only = filter_highest_quality(torrents)
                         if torrents:
                             quality = get_torrent_quality(torrents[0]['name'])
-                            print(f"    {len(torrents)}x {quality} torrents (largest: {torrents[0]['size_human']})")
+                            if is_4k_only:
+                                print(f"    ⚠️  4K ONLY: {torrents[0]['size_human']} - {torrents[0]['name'][:50]}...")
+                                torrents = []  # Don't include 4K-only entries
+                            else:
+                                print(f"    {len(torrents)}x {quality} torrents (largest: {torrents[0]['size_human']})")
                     else:
                         print(f"    Found {len(torrents)} torrent links")
 
