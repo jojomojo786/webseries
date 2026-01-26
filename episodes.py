@@ -151,15 +151,15 @@ def format_size(size_bytes: int) -> str:
     return f"{size_bytes:.0f} PB"
 
 
-def get_video_duration(filepath: str) -> int:
+def get_video_duration(filepath: str) -> float:
     """
-    Get video duration in seconds using ffprobe
+    Get video duration in minutes using ffprobe
 
     Args:
         filepath: Path to video file
 
     Returns:
-        int: Duration in seconds, or None if failed
+        float: Duration in minutes, or None if failed
     """
     import subprocess
     import json
@@ -174,8 +174,10 @@ def get_video_duration(filepath: str) -> int:
         )
         if result.returncode == 0:
             data = json.loads(result.stdout)
-            duration = float(data.get('format', {}).get('duration', 0))
-            return int(duration) if duration > 0 else None
+            duration_seconds = float(data.get('format', {}).get('duration', 0))
+            # Convert to minutes
+            duration_minutes = round(duration_seconds / 60, 2)
+            return duration_minutes if duration_minutes > 0 else None
     except (subprocess.TimeoutExpired, json.JSONDecodeError, KeyError, ValueError) as e:
         logger.debug(f"Failed to get duration for {filepath}: {e}")
     except FileNotFoundError:
@@ -184,16 +186,11 @@ def get_video_duration(filepath: str) -> int:
     return None
 
 
-def format_duration(seconds: int) -> str:
-    """Format seconds to human readable duration (e.g., '45:30', '1:23:45')"""
-    if not seconds:
+def format_duration(minutes: float) -> str:
+    """Format minutes to whole number (e.g., '45', '52')"""
+    if not minutes:
         return 'N/A'
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    secs = seconds % 60
-    if hours > 0:
-        return f"{hours}:{minutes:02d}:{secs:02d}"
-    return f"{minutes}:{secs:02d}"
+    return f"{int(minutes)}"
 
 
 def get_episodes_from_db(series_filter: str = None, season_filter: int = None) -> list[dict]:
