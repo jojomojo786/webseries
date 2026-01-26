@@ -262,15 +262,14 @@ def save_to_database(data: list[dict]) -> tuple[int, int, int]:
                             torrent_quality = 'unknown'
 
                         cursor.execute('''
-                            INSERT INTO torrents (series_id, season_id, type, name, link, size_bytes, size_human, quality)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            INSERT INTO torrents (series_id, season_id, type, name, link, size_human, quality)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
                         ''', (
                             series_id,
                             season_id,
                             torrent.get('type', 'magnet'),
                             torrent.get('name', ''),
                             torrent.get('link', ''),
-                            torrent.get('size_bytes', 0),
                             torrent.get('size_human', 'unknown'),
                             torrent_quality
                         ))
@@ -332,7 +331,7 @@ def get_series_with_torrents(series_id: int) -> dict | None:
 
             # Get torrents for each season
             for season in series['seasons']:
-                cursor.execute('SELECT * FROM torrents WHERE season_id = %s ORDER BY size_bytes DESC', (season['id'],))
+                cursor.execute('SELECT * FROM torrents WHERE season_id = %s ORDER BY id DESC', (season['id'],))
                 season['torrents'] = cursor.fetchall()
 
         return series

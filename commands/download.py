@@ -59,7 +59,7 @@ def get_qbittorrent_client(host='localhost', port=8090, username=None, password=
 
 def get_torrents_from_db(series_id=None, season_id=None, quality=None, limit=None):
     """
-    Fetch torrents from database
+    Fetch torrents from database (excludes already successful downloads)
 
     Args:
         series_id: Filter by series ID
@@ -83,6 +83,7 @@ def get_torrents_from_db(series_id=None, season_id=None, quality=None, limit=Non
             JOIN seasons sea ON t.season_id = sea.id
             JOIN series s ON sea.series_id = s.id
             WHERE t.link IS NOT NULL AND t.link != ''
+            AND (t.status IS NULL OR t.status = 0)
         '''
         params = []
 
@@ -98,7 +99,7 @@ def get_torrents_from_db(series_id=None, season_id=None, quality=None, limit=Non
             query += ' AND t.quality = %s'
             params.append(quality)
 
-        query += ' ORDER BY s.title, sea.season_number, t.size_bytes DESC'
+        query += ' ORDER BY s.title, sea.season_number, t.id DESC'
 
         if limit:
             query += ' LIMIT %s'
@@ -110,6 +111,37 @@ def get_torrents_from_db(series_id=None, season_id=None, quality=None, limit=Non
     except Error as e:
         logger.error(f"Database error: {e}")
         return []
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def update_torrent_status(torrent_id: int, status: int) -> bool:
+    """
+    Update torrent status in database
+
+    Args:
+        torrent_id: ID of the torrent
+        status: 0 = failed/pending, 1 = success
+
+    Returns:
+        bool: True if successful
+    """
+    conn = get_connection()
+    if not conn:
+        return False
+
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute('UPDATE torrents SET status = %s WHERE id = %s', (status, torrent_id))
+        conn.commit()
+        return True
+
+    except Error as e:
+        logger.error(f"Failed to update torrent status: {e}")
+        return False
 
     finally:
         cursor.close()
@@ -147,6 +179,7 @@ def move_completed_torrents(client, temp_dir=DEFAULT_TEMP_DIR, completed_dir=DEF
             if torrent.get('progress') == 1.0:  # 100% complete
                 save_path = torrent.get('save_path', '')
                 content_path = torrent.get('content_path', '')
+                magnet_uri = torrent.get('magnet_uri', '')
 
                 if temp_dir in save_path:
                     torrent_name = torrent.get('name', 'unknown')
@@ -177,6 +210,10 @@ def move_completed_torrents(client, temp_dir=DEFAULT_TEMP_DIR, completed_dir=DEF
                         logger.info(f"Moved: {torrent_name}")
                         moved_count += 1
 
+                        # Update status in database
+                        if magnet_uri:
+                            update_torrent_status_by_magnet(magnet_uri, 1)
+
                         # Remove torrent from qBittorrent (optional - keeps list clean)
                         # client.torrents_delete(torrent_hashes=torrent['hash'])
                     except Exception as e:
@@ -187,6 +224,39 @@ def move_completed_torrents(client, temp_dir=DEFAULT_TEMP_DIR, completed_dir=DEF
         logger.error(f"Error moving completed torrents: {e}")
 
     return moved_count, skipped_count
+
+
+def update_torrent_status_by_magnet(magnet_link: str, status: int) -> bool:
+    """
+    Update torrent status in database by magnet link
+
+    Args:
+        magnet_link: Magnet link of the torrent
+        status: 0 = failed/pending, 1 = success
+
+    Returns:
+        bool: True if successful
+    """
+    conn = get_connection()
+    if not conn:
+        return False
+
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute('UPDATE torrents SET status = %s WHERE link = %s', (status, magnet_link))
+        conn.commit()
+        if cursor.rowcount > 0:
+            logger.debug(f"Updated status for torrent (status={status})")
+        return True
+
+    except Error as e:
+        logger.error(f"Failed to update torrent status by magnet: {e}")
+        return False
+
+    finally:
+        cursor.close()
+        conn.close()
 
 
 def watch_and_move_completed(client, temp_dir=DEFAULT_TEMP_DIR, completed_dir=DEFAULT_COMPLETED_DIR,

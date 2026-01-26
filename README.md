@@ -230,7 +230,6 @@ python3 scraper.py --output data/output.json
         "type": "magnet",
         "name": "filename",
         "link": "magnet:?xt=...",
-        "size_bytes": 6192692569,
         "size_human": "5.77 GB"
       }
     ]
@@ -263,8 +262,15 @@ series (id, title, url, created_at, updated_at)
   ↓
 seasons (id, series_id, season_number, year, episode_count, total_size_human, quality, created_at, updated_at)
   ↓
-torrents (id, series_id, season_id, type, name, link, size_bytes, size_human, quality)
+torrents (id, series_id, season_id, type, name, link, size_human, quality, status)
 ```
+
+**Torrent Status Values:**
+- `0` - Failed/Pending (will be re-downloaded)
+- `1` - Successfully downloaded (will be skipped)
+- `NULL` - Not yet downloaded
+
+The download command automatically skips torrents with `status = 1`, preventing duplicate downloads. Status is set to `1` when a torrent completes and is moved to the completed folder.
 
 ## Troubleshooting
 
