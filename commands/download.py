@@ -28,12 +28,13 @@ DEFAULT_COMPLETED_DIR = os.path.join(DEFAULT_DOWNLOADS_DIR, 'completed')
 def get_qbittorrent_client(host='localhost', port=8090, username=None, password=None):
     """
     Get qBittorrent client connection
+    Tries without credentials first, then with credentials if provided
 
     Args:
         host: qBittorrent Web UI host
         port: qBittorrent Web UI port
-        username: qBittorrent username
-        password: qBittorrent password
+        username: qBittorrent username (optional)
+        password: qBittorrent password (optional)
 
     Returns:
         Client instance or None
@@ -42,6 +43,28 @@ def get_qbittorrent_client(host='localhost', port=8090, username=None, password=
         logger.error("qbittorrent-api package not installed. Run: pip install qbittorrent-api")
         return None
 
+    # Try without credentials first (for local installations with no auth)
+    if not username or not password:
+        try:
+            client = Client(
+                host=f'http://{host}:{port}',
+                username=None,
+                password=None,
+                SIMPLE_RESPONSES=True
+            )
+            # Test connection
+            client.auth_log_in()
+            logger.info(f"Connected to qBittorrent at {host}:{port} (no auth)")
+            return client
+        except Exception as e:
+            if username and password:
+                logger.debug(f"No-auth connection failed, trying with credentials...")
+            else:
+                logger.error(f"Failed to connect to qBittorrent: {e}")
+                logger.error(f"Try: --username admin --password adminadmin")
+                return None
+
+    # Try with credentials
     try:
         client = Client(
             host=f'http://{host}:{port}',
