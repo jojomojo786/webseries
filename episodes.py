@@ -52,7 +52,8 @@ def scan_completed_folder(completed_dir: str = DEFAULT_COMPLETED_DIR) -> list[di
                 series_name = extract_series_name(filename)
                 season, episode = extract_season_episode(filename)
                 quality = extract_quality(filename)
-                size = os.path.getsize(filepath)
+                size_bytes = os.path.getsize(filepath)
+                size_mb = int(size_bytes / (1024 * 1024))
                 duration = get_video_duration(filepath)
 
                 episodes.append({
@@ -60,8 +61,8 @@ def scan_completed_folder(completed_dir: str = DEFAULT_COMPLETED_DIR) -> list[di
                     'season': season,
                     'episode': episode,
                     'quality': quality,
-                    'size': size,
-                    'size_human': format_size(size),
+                    'size_bytes': size_bytes,
+                    'size_mb': size_mb,
                     'duration': duration,
                     'filename': filename,
                     'path': rel_path,
@@ -396,25 +397,25 @@ def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[
                 if torrent_id:
                     if duration is not None:
                         cursor.execute('''
-                            INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality, torrent_id, duration_min)
+                            INSERT INTO episodes (season_id, episode_number, status, file_path, file_size_mb, quality, torrent_id, duration_min)
                             VALUES (%s, %s, 1, %s, %s, %s, %s, %s)
-                        ''', (season_id, episode_num, ep['path'], ep['size_human'], quality, torrent_id, duration))
+                        ''', (season_id, episode_num, ep['path'], ep['size_mb'], quality, torrent_id, duration))
                     else:
                         cursor.execute('''
-                            INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality, torrent_id)
+                            INSERT INTO episodes (season_id, episode_number, status, file_path, file_size_mb, quality, torrent_id)
                             VALUES (%s, %s, 1, %s, %s, %s, %s)
-                        ''', (season_id, episode_num, ep['path'], ep['size_human'], quality, torrent_id))
+                        ''', (season_id, episode_num, ep['path'], ep['size_mb'], quality, torrent_id))
                 else:
                     if duration is not None:
                         cursor.execute('''
-                            INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality, duration_min)
+                            INSERT INTO episodes (season_id, episode_number, status, file_path, file_size_mb, quality, duration_min)
                             VALUES (%s, %s, 1, %s, %s, %s, %s)
-                        ''', (season_id, episode_num, ep['path'], ep['size_human'], quality, duration))
+                        ''', (season_id, episode_num, ep['path'], ep['size_mb'], quality, duration))
                     else:
                         cursor.execute('''
-                            INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality)
+                            INSERT INTO episodes (season_id, episode_number, status, file_path, file_size_mb, quality)
                             VALUES (%s, %s, 1, %s, %s, %s)
-                        ''', (season_id, episode_num, ep['path'], ep['size_human'], quality))
+                        ''', (season_id, episode_num, ep['path'], ep['size_mb'], quality))
                 conn.commit()
                 imported += 1
                 logger.info(f"Imported: S{season_num:02d}E{episode_num:02d}")
@@ -510,8 +511,9 @@ def episodes(ctx, scan, import_db, dry_run, series, season, missing, completed_d
                 status_icon = "✓" if ep['status'] == 1 else "?"
                 e_str = f"S{ep['season_number']:02d}E{ep['episode_number']:02d}"
                 quality = ep.get('quality', 'Unknown')
-                size = ep.get('size_human', 'Unknown')
-                click.echo(f"  {status_icon} {e_str} - {quality} - {size}")
+                size_mb = ep.get('file_size_mb')
+                size_str = f"{size_mb} MB" if size_mb else "Unknown"
+                click.echo(f"  {status_icon} {e_str} - {quality} - {size_str}")
 
     if missing:
         # Show missing episodes logic could go here
