@@ -384,12 +384,12 @@ def download(ctx, host, port, username, password, series_id, season_id, quality,
         name = f"{t['series_title']} S{t['season_number']} - {t['name']}"
 
         try:
-            # Check if torrent already exists
+            # Check if torrent already exists in qBittorrent
             torrents_info = client.torrents_info()
             existing = [tr for tr in torrents_info if tr['magnet_uri'] == magnet_link]
 
             if existing:
-                logger.info(f"Skipping (already exists): {name[:60]}...")
+                logger.info(f"Skipping (already in qBittorrent): {name[:60]}...")
                 skip_count += 1
                 continue
 
