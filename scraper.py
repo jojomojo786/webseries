@@ -28,7 +28,11 @@ def get_page(url: str, retries: int = 3) -> BeautifulSoup | None:
         try:
             response = requests.get(url, headers=HEADERS, timeout=30)
             response.raise_for_status()
-            return BeautifulSoup(response.text, "lxml")
+            # Try lxml first, fallback to html.parser
+            try:
+                return BeautifulSoup(response.text, "lxml")
+            except Exception:
+                return BeautifulSoup(response.text, "html.parser")
         except requests.RequestException as e:
             print(f"Error fetching {url}: {e}")
             if attempt < retries - 1:
@@ -39,27 +43,76 @@ def get_page(url: str, retries: int = 3) -> BeautifulSoup | None:
 def extract_topics_from_page(soup: BeautifulSoup) -> list[dict]:
     """Extract topic titles and URLs from a forum page"""
     topics = []
+    seen_urls = set()
 
-    # Find all topic links - they're in h4 tags with links to /forums/topic/
+    # Patterns to skip in titles (pagination, navigation links)
+    skip_title_patterns = [
+        r"^go to page",
+        r"^\d+$",
+        r"^page \d+",
+        r"^next$",
+        r"^prev$",
+        r"^first$",
+        r"^last$",
+    ]
+
+    # Find all topic links
     for link in soup.find_all("a", href=re.compile(r"/forums/topic/")):
-        title = link.get("title") or link.get_text(strip=True)
-        if not title or len(title) < 10:
+        href = link.get("href", "")
+
+        # Skip pagination URLs within topics (e.g., /page/2/#comments)
+        if "/page/" in href or "#comments" in href or "#" in href:
             continue
 
-        href = link.get("href")
-        if href:
-            full_url = urljoin(BASE_URL, href)
+        # Skip preview URLs
+        if "preview=" in href:
+            continue
+
+        title = link.get("title") or link.get_text(strip=True)
+        if not title or len(title) < 20:
+            continue
+
+        # Skip pagination/navigation link titles
+        title_lower = title.lower().strip()
+        if any(re.match(pattern, title_lower) for pattern in skip_title_patterns):
+            continue
+
+        # Skip if title is just a number
+        if re.match(r"^#?\d+$", title.strip()):
+            continue
+
+        full_url = urljoin(BASE_URL, href)
+
+        # Normalize URL for deduplication
+        # This site uses ?/forums/topic/ID-slug/ format, so extract the topic ID
+        topic_match = re.search(r"/forums/topic/(\d+)", full_url)
+        if topic_match:
+            normalized_url = topic_match.group(1)  # Just use topic ID
+        else:
+            normalized_url = full_url.rstrip("/")
+
+        if normalized_url not in seen_urls:
+            seen_urls.add(normalized_url)
             # Clean the title
             title = re.sub(r'\s+', ' ', title).strip()
-
-            # Avoid duplicates
-            if not any(t["url"] == full_url for t in topics):
-                topics.append({
-                    "title": title,
-                    "url": full_url
-                })
+            topics.append({
+                "title": title,
+                "url": full_url
+            })
 
     return topics
+
+
+def parse_size_from_name(name: str) -> int:
+    """Parse file size from torrent name, returns size in bytes"""
+    # Match patterns like "5.7GB", "1.5GB", "500MB", "1TB"
+    size_match = re.search(r"(\d+(?:\.\d+)?)\s*(TB|GB|MB|KB)", name, re.IGNORECASE)
+    if size_match:
+        value = float(size_match.group(1))
+        unit = size_match.group(2).upper()
+        multipliers = {"KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
+        return int(value * multipliers.get(unit, 1))
+    return 0
 
 
 def extract_torrents_from_topic(soup: BeautifulSoup) -> list[dict]:
@@ -73,10 +126,22 @@ def extract_torrents_from_topic(soup: BeautifulSoup) -> list[dict]:
             # Extract name from magnet link
             name_match = re.search(r"dn=([^&]+)", magnet)
             name = name_match.group(1) if name_match else link.get_text(strip=True)
+            name = requests.utils.unquote(name)
+
+            # Extract size from xl= parameter (exact size in bytes)
+            size_match = re.search(r"xl=(\d+)", magnet)
+            if size_match:
+                size_bytes = int(size_match.group(1))
+            else:
+                # Fallback: parse size from name
+                size_bytes = parse_size_from_name(name)
+
             torrents.append({
                 "type": "magnet",
-                "name": requests.utils.unquote(name),
-                "link": magnet
+                "name": name,
+                "link": magnet,
+                "size_bytes": size_bytes,
+                "size_human": format_size(size_bytes) if size_bytes > 0 else "unknown"
             })
 
     # Find .torrent file links
@@ -84,13 +149,50 @@ def extract_torrents_from_topic(soup: BeautifulSoup) -> list[dict]:
         torrent_url = link.get("href")
         if torrent_url:
             name = link.get_text(strip=True) or torrent_url.split("/")[-1]
+            size_bytes = parse_size_from_name(name)
             torrents.append({
                 "type": "torrent",
                 "name": name,
-                "link": urljoin(BASE_URL, torrent_url)
+                "link": urljoin(BASE_URL, torrent_url),
+                "size_bytes": size_bytes,
+                "size_human": format_size(size_bytes) if size_bytes > 0 else "unknown"
             })
 
     return torrents
+
+
+def format_size(size_bytes: int) -> str:
+    """Format bytes to human readable size"""
+    if size_bytes >= 1024**4:
+        return f"{size_bytes / 1024**4:.2f} TB"
+    elif size_bytes >= 1024**3:
+        return f"{size_bytes / 1024**3:.2f} GB"
+    elif size_bytes >= 1024**2:
+        return f"{size_bytes / 1024**2:.2f} MB"
+    elif size_bytes >= 1024:
+        return f"{size_bytes / 1024:.2f} KB"
+    return f"{size_bytes} B"
+
+
+def filter_highest_quality(torrents: list[dict]) -> list[dict]:
+    """Filter to keep only the highest quality (largest size) torrent"""
+    if not torrents:
+        return []
+
+    # Sort by size descending and return the largest
+    sorted_torrents = sorted(torrents, key=lambda x: x.get("size_bytes", 0), reverse=True)
+    largest = sorted_torrents[0]
+
+    # Only return if it has a valid size
+    if largest.get("size_bytes", 0) > 0:
+        return [largest]
+
+    # If no size info, return first magnet link
+    for t in torrents:
+        if t["type"] == "magnet":
+            return [t]
+
+    return [torrents[0]] if torrents else []
 
 
 def get_total_pages(soup: BeautifulSoup) -> int:
@@ -116,18 +218,21 @@ def get_total_pages(soup: BeautifulSoup) -> int:
     return 1
 
 
-def scrape_forum(max_pages: int = None, include_torrents: bool = True) -> list[dict]:
+def scrape_forum(max_pages: int = None, include_torrents: bool = True, highest_quality: bool = False) -> list[dict]:
     """
     Scrape the forum for all web series topics
 
     Args:
         max_pages: Maximum number of pages to scrape (None for all)
         include_torrents: Whether to also scrape torrent links from each topic
+        highest_quality: If True, only keep the largest (highest quality) torrent per topic
 
     Returns:
         List of scraped items with title, url, and optionally torrents
     """
     print(f"Starting scrape of 1TamilMV Web Series forum...")
+    if highest_quality:
+        print("  Mode: Highest quality only (largest file size)")
 
     # Get first page to determine total pages
     soup = get_page(FORUM_URL)
@@ -168,8 +273,16 @@ def scrape_forum(max_pages: int = None, include_torrents: bool = True) -> list[d
                 topic_soup = get_page(topic["url"])
                 if topic_soup:
                     torrents = extract_torrents_from_topic(topic_soup)
+
+                    # Filter for highest quality if requested
+                    if highest_quality and torrents:
+                        torrents = filter_highest_quality(torrents)
+                        if torrents:
+                            print(f"    Best quality: {torrents[0]['size_human']} - {torrents[0]['name'][:40]}...")
+                    else:
+                        print(f"    Found {len(torrents)} torrent links")
+
                     item["torrents"] = torrents
-                    print(f"    Found {len(torrents)} torrent links")
                 else:
                     item["torrents"] = []
                 time.sleep(0.5)  # Be nice to the server
@@ -199,13 +312,15 @@ def main():
     parser = argparse.ArgumentParser(description="Scrape 1TamilMV Web Series forum")
     parser.add_argument("--pages", type=int, default=None, help="Max pages to scrape (default: all)")
     parser.add_argument("--no-torrents", action="store_true", help="Skip scraping individual topic pages for torrents")
+    parser.add_argument("--highest-quality", "-hq", action="store_true", help="Only keep the largest (highest quality) torrent per topic")
     parser.add_argument("--output", type=str, default="data/webseries.json", help="Output JSON file path")
 
     args = parser.parse_args()
 
     data = scrape_forum(
         max_pages=args.pages,
-        include_torrents=not args.no_torrents
+        include_torrents=not args.no_torrents,
+        highest_quality=args.highest_quality
     )
 
     if data:
