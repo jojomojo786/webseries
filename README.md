@@ -26,19 +26,16 @@ pip install -r requirements.txt
 ## Usage
 
 ```bash
-# Scrape all pages with all torrent links
+# Scrape all pages (highest quality torrent per series by default)
 python scraper.py
 
 # Scrape only first 5 pages
 python scraper.py --pages 5
 
-# Get only the highest quality (largest) torrent per series
-python scraper.py --highest-quality
+# Include all torrents (not just highest quality)
+python scraper.py --all-torrents
 # or
-python scraper.py -hq
-
-# Combine options
-python scraper.py --pages 10 --highest-quality
+python scraper.py -a
 
 # Scrape without fetching individual topic pages (faster, titles only)
 python scraper.py --no-torrents

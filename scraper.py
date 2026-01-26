@@ -312,7 +312,7 @@ def main():
     parser = argparse.ArgumentParser(description="Scrape 1TamilMV Web Series forum")
     parser.add_argument("--pages", type=int, default=None, help="Max pages to scrape (default: all)")
     parser.add_argument("--no-torrents", action="store_true", help="Skip scraping individual topic pages for torrents")
-    parser.add_argument("--highest-quality", "-hq", action="store_true", help="Only keep the largest (highest quality) torrent per topic")
+    parser.add_argument("--all-torrents", "-a", action="store_true", help="Include all torrents instead of just the highest quality")
     parser.add_argument("--output", type=str, default="data/webseries.json", help="Output JSON file path")
 
     args = parser.parse_args()
@@ -320,7 +320,7 @@ def main():
     data = scrape_forum(
         max_pages=args.pages,
         include_torrents=not args.no_torrents,
-        highest_quality=args.highest_quality
+        highest_quality=not args.all_torrents  # Highest quality is default
     )
 
     if data:
