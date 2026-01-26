@@ -2,6 +2,14 @@
 
 A Python scraper for extracting web series titles and torrent links from the 1TamilMV forum.
 
+> **Note**: This tool is for educational purposes only. Please respect copyright laws and the platform's terms of service.
+
+## Prerequisites
+
+- Python 3.8 or higher
+- MySQL/MariaDB database
+- pip (Python package manager)
+
 ## Features
 
 - **Unified CLI**: Single command with subcommands for scraping and database management
@@ -67,8 +75,8 @@ The `scraper` command provides a unified interface to all functionality:
 **Optional: Make it available system-wide** (run from any directory):
 
 ```bash
-# Create a symlink to /usr/local/bin
-sudo ln -s /Users/adeelafzal/Downloads/Cursor\ Projects/webseries/scraper /usr/local/bin/scraper
+# Create a symlink to /usr/local/bin (replace /path/to/project with actual path)
+sudo ln -s $(pwd)/scraper /usr/local/bin/scraper
 
 # Then you can use it from anywhere:
 scraper db stats
@@ -156,6 +164,20 @@ seasons (id, series_id, season_number, year, episode_count, total_size_human, qu
 torrents (id, series_id, season_id, type, name, link, size_bytes, size_human, quality)
 ```
 
+## Troubleshooting
+
+### Database Connection Issues
+- Verify your `DATABASE_URL` in `.env` is correct
+- Ensure MySQL service is running: `sudo systemctl status mysql`
+
+### Permission Denied on Symlink
+- Use `sudo` when creating the symlink
+- Ensure the `scraper` file is executable: `chmod +x scraper`
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
 ## License
 
-MIT
+MIT License - feel free to use this project for personal or educational purposes.
