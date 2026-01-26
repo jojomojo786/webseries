@@ -390,24 +390,24 @@ def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[
                 if torrent_id:
                     if duration is not None:
                         cursor.execute('''
-                            INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality, torrent_id, duration)
-                            VALUES (%s, %s, 'available', %s, %s, %s, %s, %s)
+                            INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality, torrent_id, duration_min)
+                            VALUES (%s, %s, 1, %s, %s, %s, %s, %s)
                         ''', (season_id, episode_num, ep['path'], ep['size_human'], ep['quality'], torrent_id, duration))
                     else:
                         cursor.execute('''
                             INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality, torrent_id)
-                            VALUES (%s, %s, 'available', %s, %s, %s, %s)
+                            VALUES (%s, %s, 1, %s, %s, %s, %s)
                         ''', (season_id, episode_num, ep['path'], ep['size_human'], ep['quality'], torrent_id))
                 else:
                     if duration is not None:
                         cursor.execute('''
-                            INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality, duration)
-                            VALUES (%s, %s, 'available', %s, %s, %s, %s)
+                            INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality, duration_min)
+                            VALUES (%s, %s, 1, %s, %s, %s, %s)
                         ''', (season_id, episode_num, ep['path'], ep['size_human'], ep['quality'], duration))
                     else:
                         cursor.execute('''
                             INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality)
-                            VALUES (%s, %s, 'available', %s, %s, %s)
+                            VALUES (%s, %s, 1, %s, %s, %s)
                         ''', (season_id, episode_num, ep['path'], ep['size_human'], ep['quality']))
                 conn.commit()
                 imported += 1
@@ -501,7 +501,7 @@ def episodes(ctx, scan, import_db, dry_run, series, season, missing, completed_d
             click.echo("-" * 50)
 
             for ep in episodes_list:
-                status_icon = "✓" if ep['status'] == 'available' else "?"
+                status_icon = "✓" if ep['status'] == 1 else "?"
                 e_str = f"S{ep['season_number']:02d}E{ep['episode_number']:02d}"
                 quality = ep.get('quality', 'Unknown')
                 size = ep.get('size_human', 'Unknown')
