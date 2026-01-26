@@ -382,6 +382,9 @@ def clear_database() -> bool:
 
     try:
         # Delete in order due to foreign key constraints
+        cursor.execute('DELETE FROM episodes')
+        episodes_deleted = cursor.rowcount
+
         cursor.execute('DELETE FROM torrents')
         torrents_deleted = cursor.rowcount
 
@@ -392,13 +395,244 @@ def clear_database() -> bool:
         series_deleted = cursor.rowcount
 
         conn.commit()
-        logger.info(f"Cleared {series_deleted} series, {seasons_deleted} seasons, and {torrents_deleted} torrents from database")
+        logger.info(f"Cleared {series_deleted} series, {seasons_deleted} seasons, {torrents_deleted} torrents, {episodes_deleted} episodes from database")
         return True
 
     except Error as e:
         logger.error(f"Database error: {e}")
         conn.rollback()
         return False
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ============== Episode Management Functions ==============
+
+def add_episode(season_id: int, episode_number: int, file_path: str = None,
+                file_size: int = None, quality: str = None, duration: int = None,
+                torrent_id: int = None, status: str = 'available') -> int | None:
+    """
+    Add or update an episode record
+
+    Returns: episode ID or None on failure
+    """
+    conn = get_connection()
+    if not conn:
+        return None
+
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute('''
+            INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality, duration, torrent_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                status = VALUES(status),
+                file_path = VALUES(file_path),
+                file_size = VALUES(file_size),
+                quality = COALESCE(VALUES(quality), quality),
+                duration = COALESCE(VALUES(duration), duration),
+                torrent_id = COALESCE(VALUES(torrent_id), torrent_id),
+                updated_at = CURRENT_TIMESTAMP
+        ''', (season_id, episode_number, status, file_path, file_size, quality, duration, torrent_id))
+
+        conn.commit()
+
+        if cursor.lastrowid:
+            return cursor.lastrowid
+        else:
+            cursor.execute('SELECT id FROM episodes WHERE season_id = %s AND episode_number = %s',
+                          (season_id, episode_number))
+            result = cursor.fetchone()
+            return result[0] if result else None
+
+    except Error as e:
+        logger.error(f"Error adding episode: {e}")
+        conn.rollback()
+        return None
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def add_episodes_bulk(season_id: int, episodes: list[dict]) -> int:
+    """
+    Add multiple episodes at once
+
+    Args:
+        season_id: The season ID
+        episodes: List of dicts with keys: episode_number, file_path, file_size, quality, duration, status
+
+    Returns: Number of episodes added/updated
+    """
+    conn = get_connection()
+    if not conn:
+        return 0
+
+    cursor = conn.cursor()
+    count = 0
+
+    try:
+        for ep in episodes:
+            cursor.execute('''
+                INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality, duration)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    status = VALUES(status),
+                    file_path = VALUES(file_path),
+                    file_size = VALUES(file_size),
+                    quality = COALESCE(VALUES(quality), quality),
+                    duration = COALESCE(VALUES(duration), duration),
+                    updated_at = CURRENT_TIMESTAMP
+            ''', (
+                season_id,
+                ep.get('episode_number'),
+                ep.get('status', 'available'),
+                ep.get('file_path'),
+                ep.get('file_size'),
+                ep.get('quality'),
+                ep.get('duration')
+            ))
+            count += 1
+
+        conn.commit()
+        logger.info(f"Added/updated {count} episodes for season {season_id}")
+        return count
+
+    except Error as e:
+        logger.error(f"Error adding episodes: {e}")
+        conn.rollback()
+        return 0
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def get_season_episodes(season_id: int) -> list[dict]:
+    """Get all episodes for a season"""
+    conn = get_connection()
+    if not conn:
+        return []
+
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        cursor.execute('''
+            SELECT * FROM episodes
+            WHERE season_id = %s
+            ORDER BY episode_number
+        ''', (season_id,))
+        return cursor.fetchall()
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def get_missing_episodes(season_id: int, total_episodes: int) -> list[int]:
+    """
+    Get list of missing episode numbers for a season
+
+    Args:
+        season_id: The season ID
+        total_episodes: Expected total number of episodes
+
+    Returns: List of missing episode numbers
+    """
+    conn = get_connection()
+    if not conn:
+        return []
+
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute('''
+            SELECT episode_number FROM episodes
+            WHERE season_id = %s AND status = 'available'
+        ''', (season_id,))
+
+        available = {row[0] for row in cursor.fetchall()}
+        all_episodes = set(range(1, total_episodes + 1))
+        missing = sorted(all_episodes - available)
+
+        return missing
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def update_episode_status(season_id: int, episode_number: int, status: str) -> bool:
+    """Update the status of an episode"""
+    conn = get_connection()
+    if not conn:
+        return False
+
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute('''
+            UPDATE episodes SET status = %s, updated_at = CURRENT_TIMESTAMP
+            WHERE season_id = %s AND episode_number = %s
+        ''', (status, season_id, episode_number))
+
+        conn.commit()
+        return cursor.rowcount > 0
+
+    except Error as e:
+        logger.error(f"Error updating episode status: {e}")
+        conn.rollback()
+        return False
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def get_episodes_summary(series_id: int = None) -> list[dict]:
+    """
+    Get summary of episodes per season
+
+    Returns list of dicts with: series_title, season_number, total_episodes,
+                                available, missing, corrupted
+    """
+    conn = get_connection()
+    if not conn:
+        return []
+
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        query = '''
+            SELECT
+                s.title as series_title,
+                s.id as series_id,
+                sea.id as season_id,
+                sea.season_number,
+                sea.episode_count as expected_episodes,
+                COUNT(e.id) as total_tracked,
+                SUM(CASE WHEN e.status = 'available' THEN 1 ELSE 0 END) as available,
+                SUM(CASE WHEN e.status = 'missing' THEN 1 ELSE 0 END) as missing,
+                SUM(CASE WHEN e.status = 'corrupted' THEN 1 ELSE 0 END) as corrupted,
+                SUM(CASE WHEN e.status = 'encoding' THEN 1 ELSE 0 END) as encoding
+            FROM series s
+            JOIN seasons sea ON s.id = sea.series_id
+            LEFT JOIN episodes e ON sea.id = e.season_id
+        '''
+
+        if series_id:
+            query += ' WHERE s.id = %s'
+            query += ' GROUP BY s.id, sea.id ORDER BY s.title, sea.season_number'
+            cursor.execute(query, (series_id,))
+        else:
+            query += ' GROUP BY s.id, sea.id ORDER BY s.title, sea.season_number'
+            cursor.execute(query)
+
+        return cursor.fetchall()
 
     finally:
         cursor.close()
