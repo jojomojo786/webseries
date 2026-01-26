@@ -12,6 +12,8 @@ import time
 from datetime import datetime
 from urllib.parse import urljoin
 
+from logger import get_logger
+
 BASE_URL = "https://www.1tamilmv.rsvp"
 FORUM_URL = f"{BASE_URL}/index.php?/forums/forum/19-web-series-tv-shows/&sortby=start_date&sortdirection=desc"
 
@@ -20,6 +22,8 @@ HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.5",
 }
+
+logger = get_logger(__name__)
 
 
 def get_page(url: str, retries: int = 3) -> BeautifulSoup | None:
@@ -34,7 +38,7 @@ def get_page(url: str, retries: int = 3) -> BeautifulSoup | None:
             except Exception:
                 return BeautifulSoup(response.text, "html.parser")
         except requests.RequestException as e:
-            print(f"Error fetching {url}: {e}")
+            logger.error(f"Error fetching {url}: {e}")
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)
     return None
@@ -126,6 +130,20 @@ def parse_size_from_name(name: str) -> int:
         multipliers = {"KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
         return int(value * multipliers.get(unit, 1))
     return 0
+
+
+def extract_poster_from_topic(soup: BeautifulSoup) -> str | None:
+    """Extract poster image URL from a topic page"""
+    # Find the post content wrapper
+    content_wrap = soup.find("div", class_="cPost_contentWrap")
+    if content_wrap:
+        # Find the first image in the comment content
+        comment_content = content_wrap.find("div", attrs={"data-role": "commentContent"})
+        if comment_content:
+            img = comment_content.find("img", class_="ipsImage")
+            if img and img.get("src"):
+                return img.get("src")
+    return None
 
 
 def extract_torrents_from_topic(soup: BeautifulSoup) -> list[dict]:
@@ -334,19 +352,19 @@ def scrape_forum(max_pages: int = None, include_torrents: bool = True, highest_q
     Returns:
         List of scraped items with title, url, and optionally torrents
     """
-    print(f"Starting scrape of 1TamilMV Web Series forum...")
+    logger.info("Starting scrape of 1TamilMV Web Series forum...")
     if highest_quality:
-        print("  Mode: Best quality (1080p preferred, 4K excluded)")
+        logger.info("  Mode: Best quality (1080p preferred, 4K excluded)")
 
     # Get first page to determine total pages
     soup = get_page(FORUM_URL)
     if not soup:
-        print("Failed to fetch forum page")
+        logger.error("Failed to fetch forum page")
         return []
 
     total_pages = get_total_pages(soup)
     pages_to_scrape = min(total_pages, max_pages) if max_pages else total_pages
-    print(f"Found {total_pages} pages, will scrape {pages_to_scrape}")
+    logger.info(f"Found {total_pages} pages, will scrape {pages_to_scrape}")
 
     all_items = []
 
@@ -358,12 +376,12 @@ def scrape_forum(max_pages: int = None, include_torrents: bool = True, highest_q
             page_url = f"{BASE_URL}/index.php?/forums/forum/19-web-series-tv-shows/page/{page_num}/&sortby=start_date&sortdirection=desc"
             page_soup = get_page(page_url)
             if not page_soup:
-                print(f"Failed to fetch page {page_num}, skipping...")
+                logger.warning(f"Failed to fetch page {page_num}, skipping...")
                 continue
 
-        print(f"Scraping page {page_num}/{pages_to_scrape}...")
+        logger.info(f"Scraping page {page_num}/{pages_to_scrape}...")
         topics = extract_topics_from_page(page_soup)
-        print(f"  Found {len(topics)} topics")
+        logger.info(f"  Found {len(topics)} topics")
 
         for topic in topics:
             item = {
@@ -373,9 +391,15 @@ def scrape_forum(max_pages: int = None, include_torrents: bool = True, highest_q
             }
 
             if include_torrents:
-                print(f"  Fetching torrents for: {topic['title'][:50]}...")
+                logger.debug(f"  Fetching torrents for: {topic['title'][:50]}...")
                 topic_soup = get_page(topic["url"])
                 if topic_soup:
+                    # Extract poster image
+                    poster_url = extract_poster_from_topic(topic_soup)
+                    if poster_url:
+                        item["poster_url"] = poster_url
+                        logger.debug(f"    Found poster: {poster_url[:60]}...")
+
                     torrents = extract_torrents_from_topic(topic_soup)
 
                     # Filter for highest quality if requested
@@ -384,12 +408,12 @@ def scrape_forum(max_pages: int = None, include_torrents: bool = True, highest_q
                         if torrents:
                             quality = get_torrent_quality(torrents[0]['name'])
                             if is_4k_only:
-                                print(f"    ⚠️  4K ONLY: {torrents[0]['size_human']} - {torrents[0]['name'][:50]}...")
+                                logger.warning(f"    4K ONLY: {torrents[0]['size_human']} - {torrents[0]['name'][:50]}...")
                                 torrents = []  # Don't include 4K-only entries
                             else:
-                                print(f"    {len(torrents)}x {quality} torrents (largest: {torrents[0]['size_human']})")
+                                logger.info(f"    {len(torrents)}x {quality} torrents (largest: {torrents[0]['size_human']})")
                     else:
-                        print(f"    Found {len(torrents)} torrent links")
+                        logger.info(f"    Found {len(torrents)} torrent links")
 
                     item["torrents"] = torrents
                 else:
@@ -411,7 +435,7 @@ def save_to_json(data: list[dict], filename: str = "data/webseries.json"):
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-    print(f"Saved {len(data)} items to {filename}")
+    logger.info(f"Saved {len(data)} items to {filename}")
 
 
 def main():
@@ -444,9 +468,9 @@ def main():
         if not args.no_json:
             save_to_json(data, args.output)
 
-        print(f"\nScraping complete! Total items: {len(data)}")
+        logger.info(f"\nScraping complete! Total items: {len(data)}")
     else:
-        print("No data scraped")
+        logger.warning("No data scraped")
 
 
 if __name__ == "__main__":

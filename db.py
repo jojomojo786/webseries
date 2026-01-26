@@ -9,6 +9,10 @@ from mysql.connector import Error
 from datetime import datetime
 from urllib.parse import urlparse
 
+from logger import get_logger
+
+logger = get_logger(__name__)
+
 # Load environment variables from .env file
 try:
     from dotenv import load_dotenv
@@ -43,10 +47,10 @@ def get_connection():
         conn = mysql.connector.connect(**config)
         return conn
     except ValueError as e:
-        print(f"Configuration error: {e}")
+        logger.error(f"Configuration error: {e}")
         return None
     except Error as e:
-        print(f"Database connection error: {e}")
+        logger.error(f"Database connection error: {e}")
         return None
 
 
@@ -184,14 +188,16 @@ def save_to_database(data: list[dict]) -> tuple[int, int, int]:
 
             # Step 1: Insert or update series (base info only)
             cursor.execute('''
-                INSERT INTO series (title, url, created_at)
-                VALUES (%s, %s, %s)
+                INSERT INTO series (title, url, poster_url, created_at)
+                VALUES (%s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     title = VALUES(title),
+                    poster_url = COALESCE(VALUES(poster_url), poster_url),
                     created_at = VALUES(created_at)
             ''', (
                 item['title'],
                 item['url'],
+                item.get('poster_url'),
                 datetime.fromisoformat(item['scraped_at']) if item.get('scraped_at') else datetime.now()
             ))
 
@@ -271,10 +277,10 @@ def save_to_database(data: list[dict]) -> tuple[int, int, int]:
                         torrent_count += 1
 
         conn.commit()
-        print(f"Database: Saved {series_count} series, {season_count} seasons, {torrent_count} torrents")
+        logger.info(f"Database: Saved {series_count} series, {season_count} seasons, {torrent_count} torrents")
 
     except Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         conn.rollback()
 
     finally:
@@ -386,11 +392,11 @@ def clear_database() -> bool:
         series_deleted = cursor.rowcount
 
         conn.commit()
-        print(f"Cleared {series_deleted} series, {seasons_deleted} seasons, and {torrents_deleted} torrents from database")
+        logger.info(f"Cleared {series_deleted} series, {seasons_deleted} seasons, and {torrents_deleted} torrents from database")
         return True
 
     except Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         conn.rollback()
         return False
 
