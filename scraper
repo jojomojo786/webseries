@@ -1,0 +1,8 @@
+#!/bin/bash
+# Wrapper script for webseries scraper
+# Activates venv and runs cli.py with arguments
+
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+source "$SCRIPT_DIR/venv/bin/activate"
+python "$SCRIPT_DIR/cli.py" "$@"
+deactivate

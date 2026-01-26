@@ -3,3 +3,6 @@ beautifulsoup4>=4.12.2
 lxml>=5.0.0
 mysql-connector-python>=8.0.0
 python-dotenv>=1.0.0
+click>=8.0.0
+pyyaml>=6.0
+colorlog>=6.0.0

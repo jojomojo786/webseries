@@ -24,8 +24,13 @@ data/*.json
 Thumbs.db
 
 # Logs
+logs/
 *.log
+
+# Configuration
+config.yaml
 
 # Environment variables
 .env
 CLAUDE.md
+fetcher/
