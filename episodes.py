@@ -73,6 +73,24 @@ def extract_series_name(filename: str) -> str:
     # Remove extension
     name = Path(filename).stem
 
+    # Remove source tags (www.1TamilMV.*)
+    name = re.sub(r'www\.[^\s]+\s*-\s*', '', name)
+
+    # Remove year in parentheses
+    name = re.sub(r'\s*\(\d{4}\)', '', name)
+
+    # Truncate at episode pattern (everything after S01E01, S01 EP01, etc.)
+    # This removes episode titles and technical tags after the episode identifier
+    for pattern in [
+        r'[Ss]\d+\s*[Ee][Pp]?\s*\d+',  # S01E01 or S01 EP01
+        r'\d+x\d+',  # 1x01 pattern
+        r'[Ee][Pp]\s*\d+',  # EP01 pattern
+    ]:
+        match = re.search(pattern, name)
+        if match:
+            name = name[:match.start()].strip()
+            break
+
     # Remove quality tags
     name = re.sub(r'\[?\d{3,4}[ip]\]?', '', name, flags=re.IGNORECASE)
     name = re.sub(r'\[?(?:480p|720p|1080p|2160p|4K|UHD|FHD|HD|SD)\]?', '', name, flags=re.IGNORECASE)
@@ -80,19 +98,9 @@ def extract_series_name(filename: str) -> str:
     # Remove codec and audio tags
     name = re.sub(r'\[?(?:x264|x265|h264|h265|hevc|avc|DDP?|AAC|AC3|DTS)\]?', '', name, flags=re.IGNORECASE)
 
-    # Remove year in parentheses
-    name = re.sub(r'\s*\(\d{4}\)', '', name)
-
-    # Remove source tags (www.1TamilMV.*)
-    name = re.sub(r'www\.[^\s]+\s*-\s*', '', name)
-
     # Clean up
     name = re.sub(r'[._\-]+', ' ', name)
     name = ' '.join(name.split())
-
-    # Remove episode pattern for series name
-    name = re.sub(r'[Ss]\d+[Ee]\d+', '', name)
-    name = re.sub(r'\d+x\d+', '', name)
 
     return name.strip()
 
@@ -184,23 +192,173 @@ def get_episodes_from_db(series_filter: str = None, season_filter: int = None) -
         conn.close()
 
 
+def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[int, int]:
+    """
+    Import scanned episodes into the database
+
+    Args:
+        episodes: List of episode dicts from scan_completed_folder
+        dry_run: If True, don't actually insert into database
+
+    Returns:
+        tuple: (imported_count, skipped_count)
+    """
+    conn = get_connection()
+    if not conn:
+        return 0, len(episodes)
+
+    cursor = conn.cursor(dictionary=True)
+
+    # Fetch all seasons for matching
+    cursor.execute('''
+        SELECT s.id as series_id, s.title, sea.id as season_id, sea.season_number
+        FROM series s
+        JOIN seasons sea ON s.id = sea.series_id
+    ''')
+    seasons_data = cursor.fetchall()
+
+    # Build a searchable index: (normalized_series_name, season_number) -> season_id
+    from difflib import SequenceMatcher
+
+    def clean_title(name: str) -> str:
+        """Clean title by removing technical details and season/episode info"""
+        # Remove year in parentheses
+        name = re.sub(r'\s*\(\d{4}\)', '', name)
+
+        # Truncate at season/episode pattern (S01, S01 EP, etc.)
+        for pattern in [
+            r'\s+[Ss]\d+\s*[Ee][Pp]?\s*\(?\d+',  # S01 EP(01-02)
+            r'\s+[Ss]\d+\s+[Ee][Pp]',  # S01 EP
+            r'\s+TRUE\s+WEB-DL',  # TRUE WEB-DL marker
+            r'\s+WEBRip',  # WEBRip marker
+        ]:
+            match = re.search(pattern, name)
+            if match:
+                name = name[:match.start()].strip()
+                break
+
+        # Remove quality tags
+        name = re.sub(r'\[?\d{3,4}[ip]\]?', '', name, flags=re.IGNORECASE)
+        name = re.sub(r'\[?(?:480p|720p|1080p|2160p|4K|UHD|FHD|HD|SD)\]?', '', name, flags=re.IGNORECASE)
+
+        # Remove codec and audio tags
+        name = re.sub(r'\[?(?:x264|x265|h264|h265|hevc|avc|DDP?|AAC|AC3|DTS)\]?', '', name, flags=re.IGNORECASE)
+
+        # Remove bracketed content at end
+        name = re.sub(r'\s*\[.*?\]', '', name)
+
+        # Clean up
+        name = re.sub(r'[._\-]+', ' ', name)
+        name = ' '.join(name.split())
+
+        return name.strip()
+
+    def normalize(name: str) -> str:
+        return re.sub(r'[^a-z0-9]', '', name.lower())
+
+    seasons_index = {}
+    for season in seasons_data:
+        cleaned = clean_title(season['title'])
+        norm_title = normalize(cleaned)
+        seasons_index[(norm_title, season['season_number'])] = season['season_id']
+
+    imported = 0
+    skipped = 0
+    errors = 0
+
+    for ep in episodes:
+        series_name = ep['series']
+        season_num = ep['season']
+        episode_num = ep['episode']
+
+        if not episode_num:
+            logger.debug(f"Skipping (no episode number): {ep['filename']}")
+            skipped += 1
+            continue
+
+        # Try to find matching season
+        norm_series = normalize(series_name)
+        season_id = None
+
+        # Direct match
+        if (norm_series, season_num) in seasons_index:
+            season_id = seasons_index[(norm_series, season_num)]
+        else:
+            # Try fuzzy match
+            best_match = None
+            best_ratio = 0.7  # Minimum similarity threshold
+            for (norm_title, sn), sid in seasons_index.items():
+                if sn == season_num:
+                    ratio = SequenceMatcher(None, norm_series, norm_title).ratio()
+                    if ratio > best_ratio:
+                        best_ratio = ratio
+                        best_match = sid
+            season_id = best_match
+
+        if not season_id:
+            logger.warning(f"No matching season found: {series_name} S{season_num:02d}")
+            skipped += 1
+            continue
+
+        # Check if episode already exists
+        cursor.execute(
+            'SELECT id FROM episodes WHERE season_id = %s AND episode_number = %s',
+            (season_id, episode_num)
+        )
+        if cursor.fetchone():
+            logger.debug(f"Already exists: S{season_num:02d}E{episode_num:02d}")
+            skipped += 1
+            continue
+
+        if dry_run:
+            logger.info(f"Would insert: S{season_num:02d}E{episode_num:02d} -> season_id={season_id}")
+            imported += 1
+        else:
+            try:
+                cursor.execute('''
+                    INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality)
+                    VALUES (%s, %s, 'available', %s, %s, %s)
+                ''', (season_id, episode_num, ep['path'], ep['size'], ep['quality']))
+                conn.commit()
+                imported += 1
+                logger.info(f"Imported: S{season_num:02d}E{episode_num:02d}")
+            except Exception as e:
+                logger.error(f"Failed to insert S{season_num:02d}E{episode_num:02d}: {e}")
+                errors += 1
+
+    cursor.close()
+    conn.close()
+
+    logger.info(f"Import complete: {imported} imported, {skipped} skipped" + (f", {errors} errors" if errors else ""))
+    return imported, skipped
+
+
 @click.command()
 @click.option('--scan', is_flag=True, help='Scan completed folder for episodes')
+@click.option('--import-db', is_flag=True, help='Import scanned episodes into database')
+@click.option('--dry-run', is_flag=True, help='Show what would be imported without actually importing')
 @click.option('--series', help='Filter by series name')
 @click.option('--season', type=int, help='Filter by season number')
 @click.option('--missing', is_flag=True, help='Show missing episodes')
 @click.option('--completed-dir', default=DEFAULT_COMPLETED_DIR, help='Completed downloads folder')
 @click.pass_context
-def episodes(ctx, scan, series, season, missing, completed_dir):
+def episodes(ctx, scan, import_db, dry_run, series, season, missing, completed_dir):
     """Find and list episodes from completed downloads"""
 
-    if scan:
-        # Scan completed folder
+    # Scan completed folder (needed for both --scan and --import-db)
+    if scan or import_db:
         logger.info(f"Scanning completed folder: {completed_dir}")
         eps = scan_completed_folder(completed_dir)
 
         if not eps:
             logger.warning("No episodes found")
+            return
+
+        # Import to database if requested
+        if import_db:
+            if dry_run:
+                logger.info("Dry run mode - showing what would be imported:")
+            import_episodes_to_db(eps, dry_run=dry_run)
             return
 
         # Group by series
