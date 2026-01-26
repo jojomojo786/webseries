@@ -73,12 +73,12 @@ def backfill_data():
             # Calculate episode count from torrent names (not just counting torrents)
             episode_count = extract_episode_count_from_torrents(torrents)
 
-            # Calculate total size
-            total_size = sum(t.get('size_bytes', 0) for t in torrents)
+            # Calculate total size for human-readable display
+            total_size_bytes = sum(t.get('size_bytes', 0) for t in torrents)
 
             # Format human-readable size
             from db import format_size
-            total_size_human = format_size(total_size) if total_size > 0 else None
+            total_size_human = format_size(total_size_bytes) if total_size_bytes > 0 else None
 
             # Get best quality - use CASE WHEN for MySQL compatibility
             cursor.execute('''
@@ -96,12 +96,12 @@ def backfill_data():
             qualities = [row[0] for row in cursor.fetchall()]
             quality = qualities[0] if qualities else None
 
-            # Update series (without languages as it's not needed)
+            # Update series
             cursor.execute('''
                 UPDATE series
-                SET year = %s, season = %s, episode_count = %s, total_size = %s, total_size_human = %s, quality = %s
+                SET year = %s, season = %s, episode_count = %s, total_size_human = %s, quality = %s
                 WHERE id = %s
-            ''', (year, season, episode_count, total_size, total_size_human, quality, series['id']))
+            ''', (year, season, episode_count, total_size_human, quality, series['id']))
 
             updated += 1
             if updated <= 5:

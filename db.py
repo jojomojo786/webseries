@@ -177,21 +177,20 @@ def save_to_database(data: list[dict]) -> tuple[int, int]:
 
             # Calculate episode count from torrent names (not just counting torrents)
             episode_count = extract_episode_count_from_torrents(torrents)
-            total_size = sum(t.get('size_bytes', 0) for t in torrents)
-            total_size_human = format_size(total_size) if total_size > 0 else None
+            total_size_bytes = sum(t.get('size_bytes', 0) for t in torrents)
+            total_size_human = format_size(total_size_bytes) if total_size_bytes > 0 else None
             quality = get_best_quality(torrents)
 
             # Insert or update series with metadata
             cursor.execute('''
-                INSERT INTO series (title, url, scraped_at, year, season, episode_count, total_size, total_size_human, quality)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO series (title, url, scraped_at, year, season, episode_count, total_size_human, quality)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     title = VALUES(title),
                     scraped_at = VALUES(scraped_at),
                     year = VALUES(year),
                     season = VALUES(season),
                     episode_count = VALUES(episode_count),
-                    total_size = VALUES(total_size),
                     total_size_human = VALUES(total_size_human),
                     quality = VALUES(quality)
             ''', (
@@ -201,7 +200,6 @@ def save_to_database(data: list[dict]) -> tuple[int, int]:
                 year,
                 season,
                 episode_count,
-                total_size,
                 total_size_human,
                 quality
             ))
