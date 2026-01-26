@@ -173,7 +173,7 @@ def update_torrent_status(torrent_id: int, status: int) -> bool:
 
 def move_completed_torrents(client, temp_dir=DEFAULT_TEMP_DIR, completed_dir=DEFAULT_COMPLETED_DIR):
     """
-    Move completed torrents from temp to completed folder
+    Move completed torrents from temp to completed folder and remove them from qBittorrent
 
     Args:
         client: qBittorrent client
@@ -193,74 +193,74 @@ def move_completed_torrents(client, temp_dir=DEFAULT_TEMP_DIR, completed_dir=DEF
 
     moved_count = 0
     skipped_count = 0
+    removed_count = 0
 
     try:
         torrents = client.torrents_info()
 
         for torrent in torrents:
-            # Check if torrent is completed and in temp directory
-            if torrent.get('progress') == 1.0:  # 100% complete
+            # Check if torrent is completed (100% progress)
+            if torrent.get('progress') == 1.0:
                 save_path = torrent.get('save_path', '')
                 content_path = torrent.get('content_path', '')
                 magnet_uri = torrent.get('magnet_uri', '')
                 torrent_name = torrent.get('name', 'unknown')
+                torrent_hash = torrent.get('hash', '')
 
-                if temp_dir not in save_path:
-                    continue
+                # Handle torrents in temp directory
+                if temp_dir in save_path:
+                    dest = os.path.join(completed_dir, torrent_name)
 
-                # Destination path
-                dest = os.path.join(completed_dir, torrent_name)
+                    # Check if already exists in completed
+                    if os.path.exists(dest):
+                        logger.info(f"Already in completed, removing from qBittorrent: {torrent_name}")
+                    else:
+                        # Determine source path
+                        if content_path and os.path.exists(content_path):
+                            source = content_path
+                        else:
+                            source = os.path.join(save_path, torrent_name)
 
-                # Check if already exists in completed
-                if os.path.exists(dest):
-                    logger.info(f"Already in completed, removing from qBittorrent: {torrent_name}")
-                    # Update status and delete from qBittorrent
+                        # Move the file/folder
+                        if os.path.exists(source):
+                            try:
+                                shutil.move(source, dest)
+                                logger.info(f"Moved: {torrent_name}")
+                                moved_count += 1
+                            except Exception as e:
+                                logger.error(f"Failed to move '{torrent_name}': {e}")
+                                skipped_count += 1
+                                continue
+                        else:
+                            logger.debug(f"Source not found: {torrent_name}")
+
+                    # Update status and remove from qBittorrent
                     if magnet_uri:
                         update_torrent_status_by_magnet(magnet_uri, 1)
+
                     try:
-                        client.torrents_delete(torrent_hashes=torrent['hash'])
+                        client.torrents_delete(torrent_hashes=torrent_hash)
+                        removed_count += 1
                     except Exception as e:
                         logger.error(f"Failed to delete torrent from qBittorrent: {e}")
-                    skipped_count += 1
-                    continue
 
-                # Determine source path (could be file or folder)
-                if content_path and os.path.exists(content_path):
-                    source = content_path
-                else:
-                    source = os.path.join(save_path, torrent_name)
-
-                if not os.path.exists(source):
-                    logger.debug(f"Source not found (may have been moved): {torrent_name}")
-                    # Still update status and try to delete from qBittorrent
+                # Handle torrents that are seeding/completed in completed folder
+                # (files already moved but torrent still in qBittorrent)
+                elif completed_dir in save_path:
+                    logger.info(f"Removing completed torrent from qBittorrent: {torrent_name}")
+                    # Update status if not already set
                     if magnet_uri:
                         update_torrent_status_by_magnet(magnet_uri, 1)
                     try:
-                        client.torrents_delete(torrent_hashes=torrent['hash'])
-                    except Exception:
-                        pass
-                    skipped_count += 1
-                    continue
-
-                # Move the file/folder
-                try:
-                    shutil.move(source, dest)
-                    logger.info(f"Moved: {torrent_name}")
-                    moved_count += 1
-
-                    # Update status in database
-                    if magnet_uri:
-                        update_torrent_status_by_magnet(magnet_uri, 1)
-
-                    # Remove torrent from qBittorrent to free up slot
-                    client.torrents_delete(torrent_hashes=torrent['hash'])
-                except Exception as e:
-                    logger.error(f"Failed to move '{torrent_name}': {e}")
-                    skipped_count += 1
+                        client.torrents_delete(torrent_hashes=torrent_hash)
+                        removed_count += 1
+                    except Exception as e:
+                        logger.error(f"Failed to delete torrent from qBittorrent: {e}")
 
     except Exception as e:
         logger.error(f"Error moving completed torrents: {e}")
 
+    logger.info(f"Torrents removed from qBittorrent: {removed_count}")
     return moved_count, skipped_count
 
 
@@ -345,11 +345,11 @@ def watch_and_move_completed(client, temp_dir=DEFAULT_TEMP_DIR, completed_dir=DE
 @click.option('--temp-dir', default=DEFAULT_TEMP_DIR, help='Temp download folder')
 @click.option('--completed-dir', default=DEFAULT_COMPLETED_DIR, help='Completed downloads folder')
 @click.option('--category', help='Torrent category in qBittorrent')
-@click.option('--auto-move', is_flag=True, help='Automatically move completed torrents after downloading')
+@click.option('--no-auto-move', is_flag=True, help='Disable automatic move of completed torrents')
 @click.option('--dry-run', is_flag=True, help='Show what would be downloaded without actually downloading')
 @click.pass_context
 def download(ctx, host, port, username, password, series_id, season_id, quality,
-             limit, max_active, save_path, temp_dir, completed_dir, category, auto_move, dry_run):
+             limit, max_active, save_path, temp_dir, completed_dir, category, no_auto_move, dry_run):
     """Download torrents from database using qBittorrent"""
     config = ctx.obj.get('config', {})
 
@@ -447,8 +447,8 @@ def download(ctx, host, port, username, password, series_id, season_id, quality,
     logger.info(f"Download complete: {success_count} added, {skip_count} skipped, {error_count} failed")
     logger.info(f"Files will be stored in: {save_path}")
 
-    # Auto-move completed torrents if requested
-    if auto_move:
+    # Auto-move completed torrents (enabled by default)
+    if not no_auto_move:
         logger.info("Auto-moving completed torrents...")
         moved, skipped = move_completed_torrents(client, temp_dir, completed_dir)
         logger.info(f"Auto-move complete: {moved} moved, {skipped} skipped")
