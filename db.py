@@ -211,3 +211,34 @@ def get_stats() -> dict:
     finally:
         cursor.close()
         conn.close()
+
+
+def clear_database() -> bool:
+    """Clear all data from database tables"""
+    conn = get_connection()
+    if not conn:
+        return False
+
+    cursor = conn.cursor()
+
+    try:
+        # Delete all torrents first (foreign key constraint)
+        cursor.execute('DELETE FROM torrents')
+        torrents_deleted = cursor.rowcount
+
+        # Delete all series
+        cursor.execute('DELETE FROM series')
+        series_deleted = cursor.rowcount
+
+        conn.commit()
+        print(f"Cleared {series_deleted} series and {torrents_deleted} torrents from database")
+        return True
+
+    except Error as e:
+        print(f"Database error: {e}")
+        conn.rollback()
+        return False
+
+    finally:
+        cursor.close()
+        conn.close()

@@ -217,19 +217,34 @@ def extract_episode_range(name: str) -> str:
 
     # Match patterns like:
     # - "EP (01-08)" -> "01-08"
-    # - "EP01-08" -> "01-08"
+    # - "S02 EP01" -> "01" (space between S## and EP)
+    # - "S02EP01" -> "01" (no space)
     # - "S01E01" -> "01"
-    # - "E01" -> "01"
     # - "EP01" -> "01"
     # - No episode info -> "full"
 
-    # Match EP (XX-YY) pattern
+    # Match EP (XX-YY) pattern (e.g., "EP (01-08)")
     match = re.search(r'ep\s*\((\d+(?:-\d+)?)\)', name_lower)
     if match:
         return match.group(1)
 
-    # Match EPXX-YY or S01EXX-YY pattern
-    match = re.search(r'(?:s\d+)?ep?(\d+(?:-\d+)?)', name_lower)
+    # Match S## EP## pattern (e.g., "S02 EP01" with space)
+    match = re.search(r's\d+\s+ep(\d+)', name_lower)
+    if match:
+        return match.group(1)
+
+    # Match S##EP## pattern (e.g., "S02EP01" no space)
+    match = re.search(r's\d+ep(\d+)', name_lower)
+    if match:
+        return match.group(1)
+
+    # Match S##E## pattern (e.g., "S01E01")
+    match = re.search(r's\d+e(\d+)', name_lower)
+    if match:
+        return match.group(1)
+
+    # Match EP## pattern (e.g., "EP01")
+    match = re.search(r'\bep(\d+)\b', name_lower)
     if match:
         return match.group(1)
 
