@@ -56,10 +56,10 @@ def extract_year_from_title(title: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def extract_season_from_title(title: str) -> str | None:
-    """Extract season from series title (e.g., S01, S02)"""
-    match = re.search(r'\bS(\d{2})\b', title, re.IGNORECASE)
-    return f"S{match.group(1)}" if match else None
+def extract_season_from_title(title: str) -> int | None:
+    """Extract season from series title (e.g., S01 -> 1, S02 -> 2)"""
+    match = re.search(r'\bS(\d+)\b', title, re.IGNORECASE)
+    return int(match.group(1)) if match else None
 
 
 def extract_languages_from_title(title: str) -> str | None:
@@ -103,6 +103,19 @@ def get_best_quality(torrents: list[dict]) -> str | None:
                 return quality
 
     return None
+
+
+def format_size(size_bytes: int) -> str:
+    """Format bytes to human readable size"""
+    if size_bytes >= 1024**4:
+        return f"{size_bytes / 1024**4:.2f} TB"
+    elif size_bytes >= 1024**3:
+        return f"{size_bytes / 1024**3:.2f} GB"
+    elif size_bytes >= 1024**2:
+        return f"{size_bytes / 1024**2:.2f} MB"
+    elif size_bytes >= 1024:
+        return f"{size_bytes / 1024:.2f} KB"
+    return f"{size_bytes} B"
 
 
 def extract_episode_count_from_torrents(torrents: list[dict]) -> int:
@@ -165,12 +178,13 @@ def save_to_database(data: list[dict]) -> tuple[int, int]:
             # Calculate episode count from torrent names (not just counting torrents)
             episode_count = extract_episode_count_from_torrents(torrents)
             total_size = sum(t.get('size_bytes', 0) for t in torrents)
+            total_size_human = format_size(total_size) if total_size > 0 else None
             quality = get_best_quality(torrents)
 
             # Insert or update series with metadata
             cursor.execute('''
-                INSERT INTO series (title, url, scraped_at, year, season, episode_count, total_size, quality)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO series (title, url, scraped_at, year, season, episode_count, total_size, total_size_human, quality)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     title = VALUES(title),
                     scraped_at = VALUES(scraped_at),
@@ -178,6 +192,7 @@ def save_to_database(data: list[dict]) -> tuple[int, int]:
                     season = VALUES(season),
                     episode_count = VALUES(episode_count),
                     total_size = VALUES(total_size),
+                    total_size_human = VALUES(total_size_human),
                     quality = VALUES(quality)
             ''', (
                 item['title'],
@@ -187,6 +202,7 @@ def save_to_database(data: list[dict]) -> tuple[int, int]:
                 season,
                 episode_count,
                 total_size,
+                total_size_human,
                 quality
             ))
 

@@ -76,6 +76,10 @@ def backfill_data():
             # Calculate total size
             total_size = sum(t.get('size_bytes', 0) for t in torrents)
 
+            # Format human-readable size
+            from db import format_size
+            total_size_human = format_size(total_size) if total_size > 0 else None
+
             # Get best quality - use CASE WHEN for MySQL compatibility
             cursor.execute('''
                 SELECT DISTINCT quality FROM torrents
@@ -95,14 +99,13 @@ def backfill_data():
             # Update series (without languages as it's not needed)
             cursor.execute('''
                 UPDATE series
-                SET year = %s, season = %s, episode_count = %s, total_size = %s, quality = %s
+                SET year = %s, season = %s, episode_count = %s, total_size = %s, total_size_human = %s, quality = %s
                 WHERE id = %s
-            ''', (year, season, episode_count, total_size, quality, series['id']))
+            ''', (year, season, episode_count, total_size, total_size_human, quality, series['id']))
 
             updated += 1
             if updated <= 5:
-                size_gb = f"{total_size / (1024**3):.1f} GB"
-                print(f"  {series['title'][:40]:<40} -> Y:{year} S:{season} Q:{quality} EPs:{episode_count} Size:{size_gb}")
+                print(f"  {series['title'][:40]:<40} -> Y:{year} S:{season} Q:{quality} EPs:{episode_count} Size:{total_size_human}")
 
         conn.commit()
         print(f"\n✓ Backfilled {updated} series successfully!")
