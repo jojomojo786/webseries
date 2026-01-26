@@ -18,6 +18,9 @@ from logger import get_logger
 
 logger = get_logger(__name__)
 
+# TMDB API key
+TMDB_API_KEY = os.environ.get('TMDB_API_KEY', '')
+
 # Default completed folder
 DEFAULT_COMPLETED_DIR = '/home/webseries/downloads/completed'
 
@@ -192,6 +195,250 @@ def format_duration(minutes: float) -> str:
     if not minutes:
         return 'N/A'
     return f"{int(minutes)}"
+
+
+def fetch_tmdb_episode(tmdb_id: int, season_number: int, episode_number: int) -> dict | None:
+    """
+    Fetch detailed episode data from TMDB
+
+    Args:
+        tmdb_id: TMDB series ID
+        season_number: Season number (1-based)
+        episode_number: Episode number (1-based)
+
+    Returns:
+        dict with episode data or None
+    """
+    if not TMDB_API_KEY:
+        logger.warning("TMDB_API_KEY not set, skipping episode metadata fetch")
+        return None
+
+    import requests
+
+    base_url = f'https://api.themoviedb.org/3/tv/{tmdb_id}'
+    result = {}
+
+    try:
+        # 1. Get basic episode details
+        response = requests.get(
+            f'{base_url}/season/{season_number}/episode/{episode_number}',
+            params={'api_key': TMDB_API_KEY},
+            timeout=30
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        result.update({
+            'tmdb_id': data.get('id'),
+            'name': data.get('name'),
+            'overview': data.get('overview'),
+            'air_date': data.get('air_date'),
+            'runtime': data.get('runtime'),
+            'still_path': data.get('still_path'),
+            'vote_average': data.get('vote_average'),
+            'vote_count': data.get('vote_count'),
+        })
+
+        # Build still URL
+        if result.get('still_path'):
+            result['still_url'] = f"https://image.tmdb.org/t/p/original{result['still_path']}"
+
+        logger.info(f"Fetched episode data: S{season_number:02d}E{episode_number:02d} - {result.get('name', 'N/A')}")
+
+    except requests.RequestException as e:
+        logger.error(f"Error fetching episode S{season_number:02d}E{episode_number:02d}: {e}")
+        return None
+
+    try:
+        # 2. Get credits (director, writer, guest stars)
+        response = requests.get(
+            f'{base_url}/season/{season_number}/episode/{episode_number}/credits',
+            params={'api_key': TMDB_API_KEY},
+            timeout=30
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        # Get crew (director, writer)
+        crew_list = data.get('crew', [])
+        directors = [c['name'] for c in crew_list if c.get('job') == 'Director']
+        writers = [c['name'] for c in crew_list if c.get('job') in ['Writer', 'Screenplay', 'Teleplay', 'Story']]
+
+        if directors:
+            result['director'] = ', '.join(directors)
+        if writers:
+            result['writer'] = ', '.join(writers)
+
+        # Get guest stars (limit to top 5)
+        guest_stars = data.get('guest_stars', [])
+        if guest_stars:
+            star_names = [
+                gs.get('person', {}).get('name', '')
+                for gs in guest_stars[:5]
+                if gs.get('person', {}).get('name')
+            ]
+            if star_names:
+                result['guest_stars'] = ', '.join(star_names)
+
+    except requests.RequestException as e:
+        logger.debug(f"Error fetching episode credits: {e}")
+
+    try:
+        # 3. Get external IDs
+        response = requests.get(
+            f'{base_url}/season/{season_number}/episode/{episode_number}/external_ids',
+            params={'api_key': TMDB_API_KEY},
+            timeout=30
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        result['imdb_id'] = data.get('imdb_id')
+        result['tvdb_id'] = data.get('tvdb_id')
+
+    except requests.RequestException as e:
+        logger.debug(f"Error fetching external_ids: {e}")
+
+    return result
+
+
+def update_episode_metadata(episode_id: int, metadata: dict, dry_run: bool = False) -> bool:
+    """
+    Update episodes table with TMDB metadata
+
+    Args:
+        episode_id: Database episode ID
+        metadata: Dict with episode metadata from TMDB
+        dry_run: If True, don't make changes
+
+    Returns:
+        True on success
+    """
+    if dry_run:
+        logger.info(f"[DRY RUN] Would update episode {episode_id}")
+        for key, value in metadata.items():
+            if value is not None:
+                display_val = str(value)[:50] + '...' if len(str(value)) > 50 else value
+                logger.info(f"  {key}: {display_val}")
+        return True
+
+    conn = get_connection()
+    if not conn:
+        return False
+
+    cursor = conn.cursor()
+
+    try:
+        # Build dynamic UPDATE query
+        fields = []
+        values = []
+
+        for field in [
+            'imdb_id', 'name', 'overview', 'air_date', 'still_url',
+            'vote_average', 'vote_count', 'director', 'writer', 'guest_stars'
+        ]:
+            if field in metadata and metadata[field] is not None:
+                fields.append(f"{field} = %s")
+                values.append(metadata[field])
+
+        if not fields:
+            logger.warning(f"No metadata to update for episode {episode_id}")
+            return False
+
+        values.append(episode_id)
+        sql = f"UPDATE episodes SET {', '.join(fields)} WHERE id = %s"
+        cursor.execute(sql, values)
+        conn.commit()
+
+        logger.info(f"Updated episode {episode_id} with {len(fields)} fields")
+        return True
+
+    except Exception as e:
+        logger.error(f"Database error updating episode {episode_id}: {e}")
+        conn.rollback()
+        return False
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def fetch_and_update_episode_metadata(series_id: int = None, limit: int = 50, dry_run: bool = False) -> int:
+    """
+    Fetch and update episode metadata from TMDB
+
+    Args:
+        series_id: Specific series ID to process (or None for all)
+        limit: Max number of episodes to process
+        dry_run: If True, don't make changes
+
+    Returns:
+        Number of episodes updated
+    """
+    import requests
+
+    conn = get_connection()
+    if not conn:
+        return 0
+
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        # Find episodes that need metadata (no name or no imdb_id)
+        query = '''
+            SELECT e.id, e.episode_number, e.imdb_id, e.name,
+                   s.tmdb_id, s.id as series_id, s.title as series_title,
+                   sea.season_number
+            FROM episodes e
+            JOIN seasons sea ON e.season_id = sea.id
+            JOIN series s ON sea.series_id = s.id
+            WHERE s.tmdb_id IS NOT NULL AND s.tmdb_id != ''
+            AND (e.name IS NULL OR e.name = '' OR e.imdb_id IS NULL OR e.imdb_id = '')
+        '''
+
+        params = []
+        if series_id:
+            query += ' AND s.id = %s'
+            params.append(series_id)
+
+        query += ' ORDER BY e.id DESC'
+        if limit:
+            query += ' LIMIT %s'
+            params.append(limit)
+
+        cursor.execute(query, tuple(params) if params else ())
+        episodes = cursor.fetchall()
+
+        if not episodes:
+            logger.info("No episodes found that need metadata")
+            return 0
+
+        logger.info(f"Found {len(episodes)} episodes to process")
+
+        updated = 0
+
+        for ep in episodes:
+            tmdb_id = ep['tmdb_id']
+            season_num = ep['season_number']
+            ep_num = ep['episode_number']
+
+            logger.info(f"\nProcessing: {ep['series_title'][:50]}... S{season_num:02d}E{ep_num:02d}")
+
+            # Fetch from TMDB
+            metadata = fetch_tmdb_episode(tmdb_id, season_num, ep_num)
+            if not metadata:
+                logger.warning(f"Could not fetch metadata for S{season_num:02d}E{ep_num:02d}")
+                continue
+
+            # Update database
+            if update_episode_metadata(ep['id'], metadata, dry_run):
+                updated += 1
+
+        return updated
+
+    finally:
+        cursor.close()
+        conn.close()
 
 
 def get_episodes_from_db(series_filter: str = None, season_filter: int = None) -> list[dict]:
@@ -433,14 +680,35 @@ def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[
 @click.command()
 @click.option('--scan', is_flag=True, help='Scan completed folder for episodes')
 @click.option('--import-db', is_flag=True, help='Import scanned episodes into database')
+@click.option('--fetch-metadata', is_flag=True, help='Fetch episode metadata from TMDB')
 @click.option('--dry-run', is_flag=True, help='Show what would be imported without actually importing')
+@click.option('--series-id', type=int, help='Process specific series by ID (for --fetch-metadata)')
+@click.option('--limit', type=int, default=50, help='Max episodes to process (for --fetch-metadata)')
 @click.option('--series', help='Filter by series name')
 @click.option('--season', type=int, help='Filter by season number')
 @click.option('--missing', is_flag=True, help='Show missing episodes')
 @click.option('--completed-dir', default=DEFAULT_COMPLETED_DIR, help='Completed downloads folder')
 @click.pass_context
-def episodes(ctx, scan, import_db, dry_run, series, season, missing, completed_dir):
+def episodes(ctx, scan, import_db, fetch_metadata, dry_run, series_id, limit, series, season, missing, completed_dir):
     """Find and list episodes from completed downloads"""
+
+    # Fetch metadata from TMDB
+    if fetch_metadata:
+        if dry_run:
+            logger.info("=" * 60)
+            logger.info("DRY RUN MODE - No changes will be made")
+            logger.info("=" * 60)
+
+        updated = fetch_and_update_episode_metadata(
+            series_id=series_id,
+            limit=limit,
+            dry_run=dry_run
+        )
+
+        logger.info(f"Updated {updated} episodes")
+        if dry_run:
+            logger.info("DRY RUN - No changes were made")
+        return
 
     # Scan completed folder (needed for both --scan and --import-db)
     if scan or import_db:
