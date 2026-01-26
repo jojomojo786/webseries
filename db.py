@@ -8,6 +8,13 @@ from mysql.connector import Error
 from datetime import datetime
 from urllib.parse import urlparse
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not installed, use system env vars
+
 # Database configuration from environment variable
 # Format: mysql://user:password@host:port/database
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
