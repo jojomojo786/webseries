@@ -30,12 +30,14 @@ def cli(ctx, config, debug):
 from commands.run import run
 from commands.db import db_group
 from commands.download import download, move_completed
+from episodes import episodes
 
 # Register commands
 cli.add_command(run)
 cli.add_command(db_group)
 cli.add_command(download)
 cli.add_command(move_completed)
+cli.add_command(episodes)
 
 
 if __name__ == '__main__':
