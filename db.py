@@ -533,6 +533,29 @@ def get_season_episodes(season_id: int) -> list[dict]:
         conn.close()
 
 
+def get_seasons_for_series(series_id: int) -> list[dict]:
+    """Get all seasons for a series"""
+    conn = get_connection()
+    if not conn:
+        return []
+
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        cursor.execute('''
+            SELECT id, series_id, season_number, episode_count,
+                   total_size_human, quality, year
+            FROM seasons
+            WHERE series_id = %s
+            ORDER BY season_number
+        ''', (series_id,))
+        return cursor.fetchall()
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def get_missing_episodes(season_id: int, total_episodes: int) -> list[int]:
     """
     Get list of missing episode numbers for a season

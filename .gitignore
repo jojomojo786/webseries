@@ -34,3 +34,4 @@ config.yaml
 .env
 CLAUDE.md
 fetcher/
+downloads/
