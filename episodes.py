@@ -300,6 +300,30 @@ def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[
             skipped += 1
             continue
 
+        # Find matching torrent by episode number
+        torrent_id = None
+        cursor.execute('''
+            SELECT id, name FROM torrents
+            WHERE season_id = %s
+        ''', (season_id,))
+        torrents = cursor.fetchall()
+
+        for torrent in torrents:
+            # Extract episode from torrent name
+            _, t_ep = extract_season_episode(torrent['name'])
+            if t_ep == episode_num:
+                torrent_id = torrent['id']
+                break
+
+            # Check for batch torrent pattern "EP (01-03)" or "EP(01-03)"
+            batch_match = re.search(r'[Ee][Pp]?\s*\(?(\d+)\s*-\s*(\d+)\)?', torrent['name'])
+            if batch_match:
+                start_ep = int(batch_match.group(1))
+                end_ep = int(batch_match.group(2))
+                if start_ep <= episode_num <= end_ep:
+                    torrent_id = torrent['id']
+                    break
+
         # Check if episode already exists
         cursor.execute(
             'SELECT id FROM episodes WHERE season_id = %s AND episode_number = %s',
@@ -311,14 +335,21 @@ def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[
             continue
 
         if dry_run:
-            logger.info(f"Would insert: S{season_num:02d}E{episode_num:02d} -> season_id={season_id}")
+            t_info = f", torrent_id={torrent_id}" if torrent_id else ""
+            logger.info(f"Would insert: S{season_num:02d}E{episode_num:02d} -> season_id={season_id}{t_info}")
             imported += 1
         else:
             try:
-                cursor.execute('''
-                    INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality)
-                    VALUES (%s, %s, 'available', %s, %s, %s)
-                ''', (season_id, episode_num, ep['path'], ep['size'], ep['quality']))
+                if torrent_id:
+                    cursor.execute('''
+                        INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality, torrent_id)
+                        VALUES (%s, %s, 'available', %s, %s, %s, %s)
+                    ''', (season_id, episode_num, ep['path'], ep['size'], ep['quality'], torrent_id))
+                else:
+                    cursor.execute('''
+                        INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality)
+                        VALUES (%s, %s, 'available', %s, %s, %s)
+                    ''', (season_id, episode_num, ep['path'], ep['size'], ep['quality']))
                 conn.commit()
                 imported += 1
                 logger.info(f"Imported: S{season_num:02d}E{episode_num:02d}")
