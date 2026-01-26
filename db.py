@@ -183,11 +183,11 @@ def save_to_database(data: list[dict]) -> tuple[int, int]:
 
             # Insert or update series with metadata
             cursor.execute('''
-                INSERT INTO series (title, url, scraped_at, year, season, episode_count, total_size_human, quality)
+                INSERT INTO series (title, url, created_at, year, season, episode_count, total_size_human, quality)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     title = VALUES(title),
-                    scraped_at = VALUES(scraped_at),
+                    created_at = VALUES(created_at),
                     year = VALUES(year),
                     season = VALUES(season),
                     episode_count = VALUES(episode_count),
