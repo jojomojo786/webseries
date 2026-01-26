@@ -45,7 +45,7 @@ def extract_topics_from_page(soup: BeautifulSoup) -> list[dict]:
     topics = []
     seen_urls = set()
 
-    # Patterns to skip in titles (pagination, navigation links)
+    # Patterns to skip in titles (pagination, navigation links, non-series content)
     skip_title_patterns = [
         r"^go to page",
         r"^\d+$",
@@ -54,6 +54,15 @@ def extract_topics_from_page(soup: BeautifulSoup) -> list[dict]:
         r"^prev$",
         r"^first$",
         r"^last$",
+    ]
+
+    # Content to exclude (not actual web series)
+    exclude_content = [
+        "audio launch",
+        "press meet",
+        "trailer launch",
+        "teaser launch",
+        "music launch",
     ]
 
     # Find all topic links
@@ -79,6 +88,10 @@ def extract_topics_from_page(soup: BeautifulSoup) -> list[dict]:
 
         # Skip if title is just a number
         if re.match(r"^#?\d+$", title.strip()):
+            continue
+
+        # Skip non-series content (audio launches, press meets, etc.)
+        if any(excl in title_lower for excl in exclude_content):
             continue
 
         full_url = urljoin(BASE_URL, href)
