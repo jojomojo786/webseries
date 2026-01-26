@@ -344,12 +344,12 @@ def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[
                     cursor.execute('''
                         INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality, torrent_id)
                         VALUES (%s, %s, 'available', %s, %s, %s, %s)
-                    ''', (season_id, episode_num, ep['path'], ep['size'], ep['quality'], torrent_id))
+                    ''', (season_id, episode_num, ep['path'], ep['size_human'], ep['quality'], torrent_id))
                 else:
                     cursor.execute('''
                         INSERT INTO episodes (season_id, episode_number, status, file_path, file_size, quality)
                         VALUES (%s, %s, 'available', %s, %s, %s)
-                    ''', (season_id, episode_num, ep['path'], ep['size'], ep['quality']))
+                    ''', (season_id, episode_num, ep['path'], ep['size_human'], ep['quality']))
                 conn.commit()
                 imported += 1
                 logger.info(f"Imported: S{season_num:02d}E{episode_num:02d}")
