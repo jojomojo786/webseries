@@ -182,32 +182,49 @@ def is_4k_torrent(name: str) -> bool:
     return any(p in name_lower for p in patterns_4k)
 
 
+def get_torrent_quality(name: str) -> str:
+    """Extract quality from torrent name"""
+    name_lower = name.lower()
+    if "2160p" in name_lower or "4k" in name_lower:
+        return "4k"
+    elif "1080p" in name_lower:
+        return "1080p"
+    elif "720p" in name_lower:
+        return "720p"
+    elif "480p" in name_lower:
+        return "480p"
+    elif "360p" in name_lower:
+        return "360p"
+    return "unknown"
+
+
 def filter_highest_quality(torrents: list[dict]) -> list[dict]:
-    """Filter to keep the best 1080p/720p torrent (exclude 4K)"""
+    """
+    Filter torrents to keep best quality (1080p preferred, exclude 4K).
+    Keeps ALL torrents of the best available quality (for series with multiple episode batches).
+    """
     if not torrents:
         return []
 
-    # First, filter out 4K torrents - we want 1080p or 720p
+    # First, filter out 4K torrents
     non_4k_torrents = [t for t in torrents if not is_4k_torrent(t.get("name", ""))]
 
     # If all torrents are 4K, fall back to original list
     if not non_4k_torrents:
         non_4k_torrents = torrents
 
-    # Sort by size descending and return the largest (best quality among 1080p/720p)
-    sorted_torrents = sorted(non_4k_torrents, key=lambda x: x.get("size_bytes", 0), reverse=True)
-    largest = sorted_torrents[0]
+    # Group torrents by quality
+    quality_priority = ["1080p", "720p", "480p", "360p", "unknown", "4k"]
 
-    # Only return if it has a valid size
-    if largest.get("size_bytes", 0) > 0:
-        return [largest]
+    # Find the best available quality
+    for quality in quality_priority:
+        quality_torrents = [t for t in non_4k_torrents if get_torrent_quality(t.get("name", "")) == quality]
+        if quality_torrents:
+            # Return ALL torrents of this quality (for multiple episode batches)
+            return sorted(quality_torrents, key=lambda x: x.get("size_bytes", 0), reverse=True)
 
-    # If no size info, return first magnet link
-    for t in non_4k_torrents:
-        if t["type"] == "magnet":
-            return [t]
-
-    return [non_4k_torrents[0]] if non_4k_torrents else []
+    # Fallback: return all non-4K torrents sorted by size
+    return sorted(non_4k_torrents, key=lambda x: x.get("size_bytes", 0), reverse=True)
 
 
 def get_total_pages(soup: BeautifulSoup) -> int:
@@ -247,7 +264,7 @@ def scrape_forum(max_pages: int = None, include_torrents: bool = True, highest_q
     """
     print(f"Starting scrape of 1TamilMV Web Series forum...")
     if highest_quality:
-        print("  Mode: Highest quality only (largest file size)")
+        print("  Mode: Best quality (1080p preferred, 4K excluded)")
 
     # Get first page to determine total pages
     soup = get_page(FORUM_URL)
@@ -293,7 +310,8 @@ def scrape_forum(max_pages: int = None, include_torrents: bool = True, highest_q
                     if highest_quality and torrents:
                         torrents = filter_highest_quality(torrents)
                         if torrents:
-                            print(f"    Best quality: {torrents[0]['size_human']} - {torrents[0]['name'][:40]}...")
+                            quality = get_torrent_quality(torrents[0]['name'])
+                            print(f"    {len(torrents)}x {quality} torrents (largest: {torrents[0]['size_human']})")
                     else:
                         print(f"    Found {len(torrents)} torrent links")
 
