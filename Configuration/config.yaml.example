@@ -1,0 +1,41 @@
+# Webseries Scraper Configuration
+# Copy this file to config.yaml and customize settings
+
+# Database configuration
+database:
+  # URL will be loaded from DATABASE_URL environment variable
+  # Format: mysql://user:password@host:port/database
+  url: ${DATABASE_URL}
+
+# qBittorrent configuration
+qbittorrent:
+  host: ${QBITTORRENT_HOST:-localhost}
+  port: ${QBITTORRENT_PORT:-8090}
+  username: ${QBITTORRENT_USERNAME}
+  password: ${QBITTORRENT_PASSWORD}
+  save_path: ${QBITTORRENT_SAVE_PATH}
+  temp_dir: ${QBITTORRENT_TEMP_DIR:-/home/webseries/downloads/temp}
+  completed_dir: ${QBITTORRENT_COMPLETED_DIR:-/home/webseries/downloads/completed}
+  category: ${QBITTORRENT_CATEGORY}
+
+# Scraper settings
+scraper:
+  base_url: "https://www.1tamilmv.rsvp"
+  pages: null  # null = unlimited pages, or specify number like 5
+  rate_limit: 2.0  # seconds between requests (be nice to the server)
+  timeout: 30  # request timeout in seconds
+  quality_filter: true  # filter to highest quality
+  exclude_4k: true  # exclude 4K torrents (false to include them)
+  preferred_quality: "1080p"  # preferred quality tier
+
+# Output settings
+output:
+  json_file: "data/webseries.json"
+  enabled: true
+
+# Logging configuration
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  file: "logs/scraper.log"
+  max_bytes: 10485760  # 10MB - size before rotation
+  backup_count: 5  # number of backup logs to keep

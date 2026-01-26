@@ -8,6 +8,13 @@ Provides progress tracking and display for long-running operations.
 import sys
 import time
 from typing import Optional
+
+# Add parent directory to Python path for imports
+from pathlib import Path
+script_dir = Path(__file__).parent.parent
+sys.path.insert(0, str(script_dir / "Core Application"))
+sys.path.insert(0, str(script_dir))
+
 from logger import get_logger
 
 logger = get_logger(__name__)

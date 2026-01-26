@@ -5,6 +5,13 @@ Run database migrations to update schema and populate new fields
 
 import sys
 import re
+from pathlib import Path
+
+# Add all subdirectories to Python path for imports
+script_dir = Path(__file__).parent.parent
+sys.path.insert(0, str(script_dir / "Core Application"))
+sys.path.insert(0, str(script_dir))
+
 from db import get_connection
 
 

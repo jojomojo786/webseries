@@ -18,6 +18,12 @@ import hashlib
 import base64
 import requests
 from pathlib import Path
+
+# Add all subdirectories to Python path for imports
+script_dir = Path(__file__).parent.parent
+sys.path.insert(0, str(script_dir / "Core Application"))
+sys.path.insert(0, str(script_dir / "Episode Management"))
+sys.path.insert(0, str(script_dir))
 from typing import Optional, Dict, Any
 
 # Load environment variables from .env file

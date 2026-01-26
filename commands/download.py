@@ -2,6 +2,14 @@
 Download command - Send magnet links to qBittorrent
 """
 
+import sys
+from pathlib import Path
+
+# Add all subdirectories to Python path for imports
+script_dir = Path(__file__).parent.parent
+sys.path.insert(0, str(script_dir / "Core Application"))
+sys.path.insert(0, str(script_dir))
+
 import os
 import shutil
 import time
@@ -19,8 +27,9 @@ except ImportError:
     QBITTORRENT_AVAILABLE = False
 
 
-# Default paths
-DEFAULT_DOWNLOADS_DIR = '/home/webseries/downloads'
+# Default paths (relative to new directory structure)
+script_dir = Path(__file__).parent.parent
+DEFAULT_DOWNLOADS_DIR = str(script_dir / 'Data & Cache' / 'downloads')
 DEFAULT_TEMP_DIR = os.path.join(DEFAULT_DOWNLOADS_DIR, 'temp')
 DEFAULT_COMPLETED_DIR = os.path.join(DEFAULT_DOWNLOADS_DIR, 'completed')
 

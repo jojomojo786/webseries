@@ -17,10 +17,17 @@ Typical folder structures supported:
     /Downloads/My.Series.S01E05.1080p.mkv
 """
 
+import sys
+from pathlib import Path
+
+# Add all subdirectories to Python path for imports
+script_dir = Path(__file__).parent.parent
+sys.path.insert(0, str(script_dir / "Core Application"))
+sys.path.insert(0, str(script_dir))
+
 import os
 import re
 import argparse
-from pathlib import Path
 from datetime import datetime
 
 # Load environment variables

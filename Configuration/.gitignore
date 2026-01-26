@@ -25,18 +25,13 @@ Thumbs.db
 
 # Logs
 logs/
-"Data & Cache/logs/"
 *.log
 
 # Configuration
 config.yaml
-"Configuration/config.yaml"
 
 # Environment variables
 .env
-"Configuration/.env"
 CLAUDE.md
-"Documentation/CLAUDE.md"
 fetcher/
 downloads/
-"Data & Cache/downloads/"

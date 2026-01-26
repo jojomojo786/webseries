@@ -5,6 +5,13 @@ Usage: python3 query_series.py [view|table] [limit]
 """
 
 import sys
+from pathlib import Path
+
+# Add all subdirectories to Python path for imports
+script_dir = Path(__file__).parent.parent
+sys.path.insert(0, str(script_dir / "Core Application"))
+sys.path.insert(0, str(script_dir))
+
 from db import get_connection
 from logger import setup_logging, get_logger
 from config import load_config

@@ -9,10 +9,18 @@ Usage:
     python3 cli.py episodes --missing           # Show missing episodes
 """
 
+import sys
+from pathlib import Path
+
+# Add all subdirectories to Python path for imports
+script_dir = Path(__file__).parent.parent
+sys.path.insert(0, str(script_dir / "Core Application"))
+sys.path.insert(0, str(script_dir / "Episode Management"))
+sys.path.insert(0, str(script_dir))
+
 import os
 import re
 import click
-from pathlib import Path
 from db import get_connection
 from logger import get_logger
 import tmdb_cache
@@ -23,8 +31,9 @@ logger = get_logger(__name__)
 # TMDB API key
 TMDB_API_KEY = os.environ.get('TMDB_API_KEY', '')
 
-# Default completed folder
-DEFAULT_COMPLETED_DIR = '/home/webseries/downloads/completed'
+# Default completed folder (relative to new directory structure)
+script_dir = Path(__file__).parent.parent
+DEFAULT_COMPLETED_DIR = str(script_dir / 'Data & Cache' / 'downloads' / 'completed')
 
 # Video file extensions
 VIDEO_EXTENSIONS = {'.mkv', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v'}

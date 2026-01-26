@@ -6,11 +6,18 @@ Caches TMDB API responses to reduce API calls and improve performance.
 """
 
 import os
+import sys
 import json
 import hashlib
 import time
 from pathlib import Path
 from typing import Any, Optional
+
+# Add parent directory to Python path for imports
+script_dir = Path(__file__).parent.parent
+sys.path.insert(0, str(script_dir / "Core Application"))
+sys.path.insert(0, str(script_dir))
+
 from logger import get_logger
 
 logger = get_logger(__name__)

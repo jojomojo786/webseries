@@ -2,6 +2,14 @@
 Run command - Execute the scraper
 """
 
+import sys
+from pathlib import Path
+
+# Add all subdirectories to Python path for imports
+script_dir = Path(__file__).parent.parent
+sys.path.insert(0, str(script_dir / "Core Application"))
+sys.path.insert(0, str(script_dir))
+
 import click
 from scraper import scrape_forum, save_to_json
 from db import save_to_database

@@ -9,6 +9,9 @@ from pathlib import Path
 from copy import deepcopy
 
 
+# Get script directory for relative paths
+script_dir = Path(__file__).parent.parent
+
 # Default config structure
 DEFAULT_CONFIG = {
     'database': {
@@ -20,8 +23,8 @@ DEFAULT_CONFIG = {
         'username': os.environ.get('QBITTORRENT_USERNAME', ''),
         'password': os.environ.get('QBITTORRENT_PASSWORD', ''),
         'save_path': os.environ.get('QBITTORRENT_SAVE_PATH', ''),
-        'temp_dir': os.environ.get('QBITTORRENT_TEMP_DIR', '/home/webseries/downloads/temp'),
-        'completed_dir': os.environ.get('QBITTORRENT_COMPLETED_DIR', '/home/webseries/downloads/completed'),
+        'temp_dir': os.environ.get('QBITTORRENT_TEMP_DIR', str(script_dir / 'Data & Cache' / 'downloads' / 'temp')),
+        'completed_dir': os.environ.get('QBITTORRENT_COMPLETED_DIR', str(script_dir / 'Data & Cache' / 'downloads' / 'completed')),
         'max_active': int(os.environ.get('QBITTORRENT_MAX_ACTIVE', 5)),
         'category': os.environ.get('QBITTORRENT_CATEGORY', '')
     },
@@ -35,12 +38,12 @@ DEFAULT_CONFIG = {
         'preferred_quality': '1080p'
     },
     'output': {
-        'json_file': 'data/webseries.json',
+        'json_file': str(script_dir / 'Data & Cache' / 'data' / 'webseries.json'),
         'enabled': True
     },
     'logging': {
         'level': 'INFO',
-        'file': 'logs/scraper.log',
+        'file': str(script_dir / 'Data & Cache' / 'logs' / 'scraper.log'),
         'max_bytes': 10485760,  # 10MB
         'backup_count': 5,
         'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s'

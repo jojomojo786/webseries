@@ -1,1 +1,1 @@
-Use 'bd' for task tracking
+Documentation/CLAUDE.md
