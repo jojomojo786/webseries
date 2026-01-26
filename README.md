@@ -10,6 +10,8 @@ A Python scraper for extracting web series titles and torrent links from the 1Ta
 - MySQL/MariaDB database
 - pip (Python package manager)
 - qBittorrent with Web UI enabled (for download feature)
+- TMDB API Key (for metadata fetching)
+- OpenRouter API Key (for AI-powered series matching)
 
 ## Features
 
@@ -21,6 +23,8 @@ A Python scraper for extracting web series titles and torrent links from the 1Ta
 - **Smart Parsing**: Extracts seasons, episodes, file sizes, and quality from torrent names
 - **Database Tools**: Integrity checks, orphan fixing, statistics, and data clearing
 - **qBittorrent Integration**: Download torrents directly to temp/completed folders
+- **AI-Powered Series Matching**: Find tmdb_id and imdb_id using poster analysis with GPT-5 Nano Vision
+- **Episode Management**: Import, scan, and fetch episode metadata from TMDB
 - **Backward Compatible**: Legacy `scraper.py` still works with argparse
 
 ## Installation
@@ -52,6 +56,11 @@ QBITTORRENT_USERNAME=admin
 QBITTORRENT_PASSWORD=adminadmin
 QBITTORRENT_TEMP_DIR=/home/webseries/downloads/temp
 QBITTORRENT_COMPLETED_DIR=/home/webseries/downloads/completed
+
+# API Keys (optional - for AI finder and metadata)
+RAPIDAPI_KEY=your_rapidapi_key
+TMDB_API_KEY=your_tmdb_api_key
+OPENROUTER_API_KEY=your_openrouter_api_key
 EOF
 ```
 
@@ -109,6 +118,65 @@ python3 cli.py move-completed --watch --interval 30
 python3 cli.py download --dry-run
 ```
 
+### AI-Powered Series Finder
+
+Find `tmdb_id` and `imdb_id` for series using AI poster analysis:
+
+```bash
+# Match a specific series using AI
+python3 cli.py --finder <series_id>
+
+# Match all series without tmdb_id
+python3 cli.py --finder-all
+
+# Dry run to preview
+python3 cli.py --finder-all --dry-run
+```
+
+**How it works:**
+1. Downloads poster from `poster_url` column
+2. Analyzes poster with AI vision (GPT-5 Nano)
+3. Searches TMDB with cleaned series name
+4. Fetches `imdb_id` from TMDB external_ids endpoint
+5. Updates database: `tmdb_id`, `imdb_id`, `gpt=1`
+
+**Database columns updated:**
+- `tmdb_id` - TMDB series ID
+- `imdb_id` - IMDb ID (tt1234567 format)
+- `gpt` - 1 = AI success, 0 = failed
+
+### Episode Management
+
+Manage completed episodes and fetch metadata from TMDB:
+
+```bash
+# Scan completed folder for episodes
+python3 cli.py episodes --scan
+
+# Import scanned episodes into database
+python3 cli.py episodes --import-db
+
+# Auto-import workflow: scan → import → match → fetch-metadata
+python3 cli.py episodes --auto-import
+
+# Fetch episode metadata from TMDB
+python3 cli.py episodes --fetch-metadata
+
+# Match series to TMDB (traditional method)
+python3 cli.py episodes --match-series <series_id>
+
+# Match all series without TMDB IDs (traditional method)
+python3 cli.py episodes --match-all-series
+
+# Validate metadata
+python3 cli.py episodes --validate
+
+# TMDB cache management
+python3 cli.py episodes --cache-stats
+python3 cli.py episodes --cache-clear
+python3 cli.py episodes --cache-cleanup
+```
+
 ### Download Workflow Diagram
 
 ```
@@ -141,6 +209,44 @@ python3 cli.py download --dry-run
        │  command                           └──────────┘  │
        │                                                  │
        └──────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        EPISODE MANAGEMENT WORKFLOW                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  1. SCRAPE & DOWNLOAD        2. IMPORT EPISODES          3. AI FINDER
+  ┌─────────────┐             ┌──────────────┐            ┌─────────────┐
+  │ cli.py run  │────────────▶│ cli.py       │───────────▶│ cli.py      │
+  │ & download  │             │ episodes     │            │ --finder    │
+  │             │             │ --import-db  │            │             │
+  │ Stores in   │             │              │            │ Analyzes    │
+  │ completed/  │             │ Scans files  │            │ poster with │
+  └─────────────┘             │ → episodes DB│            │ AI vision   │
+                              └──────────────┘            │ Gets tmdb_id │
+                                                          │ + imdb_id   │
+                                                          └─────────────┘
+                                                                  │
+  4. FETCH METADATA            5. VALIDATE                    ▼
+  ┌─────────────┐             ┌──────────────┐      ┌─────────────┐
+  │ cli.py      │             │ cli.py       │      │  SERIES     │
+  │ episodes    │             │ episodes     │      │  TABLE      │
+  │ --fetch-    │             │ --validate   │      │             │
+  │ metadata    │             │              │      │ tmdb_id ✓   │
+  │             │             │ Checks       │      │ imdb_id ✓   │
+  │ Uses tmdb_id│             │ episode      │      │ gpt = 1     │
+  │ from series │             │ counts       │      └─────────────┘
+  └─────────────┘             └──────────────┘
+        │
+        ▼
+  ┌─────────────┐
+  │  EPISODES   │
+  │  TABLE      │
+  │             │
+  │ name ✓      │
+  │ overview ✓  │
+  │ air_date ✓  │
+  │ runtime ✓   │
+  └─────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                            COMMAND FLOW                                      │
@@ -255,15 +361,27 @@ tail -f logs/scraper.log
 
 ## Database Schema
 
-The scraper uses a normalized three-table structure:
+The scraper uses a normalized structure with multiple tables:
 
 ```
-series (id, title, url, created_at, updated_at)
+series (id, title, name, url, poster_url, tmdb_id, imdb_id, gpt, year, summary, rating, created_at, updated_at)
   ↓
 seasons (id, series_id, season_number, year, episode_count, total_size_human, quality, created_at, updated_at)
   ↓
 torrents (id, series_id, season_id, type, name, link, size_human, quality, status)
+  ↓
+episodes (id, series_id, season_number, episode_number, file_path, file_size_mb, quality, status, name, overview, air_date, runtime, still_url, created_at)
 ```
+
+**Series Table Columns:**
+- `tmdb_id` - TMDB series ID (found via AI --finder)
+- `imdb_id` - IMDb ID in tt1234567 format (found via AI --finder)
+- `poster_url` - Poster image URL for AI analysis
+- `gpt` - AI matching status: 1 = success, 0 = failed
+- `name` - Clean series name from TMDB
+- `summary` - Series overview
+- `rating` - TMDB rating
+- `year` - Release year
 
 **Torrent Status Values:**
 - `0` - Failed/Pending (will be re-downloaded)

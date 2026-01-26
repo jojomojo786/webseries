@@ -8,11 +8,14 @@ from config import load_config
 from logger import setup_logging
 
 
-@click.group()
+@click.group(invoke_without_command=True)
 @click.option('--config', default='config.yaml', help='Config file path')
 @click.option('--debug', is_flag=True, help='Enable debug logging')
+@click.option('--finder', type=int, help='Match a series using AI poster analysis by series ID')
+@click.option('--finder-all', is_flag=True, help='Match all series without tmdb_id using AI poster analysis')
+@click.option('--dry-run', is_flag=True, help='Show what would be done without making changes')
 @click.pass_context
-def cli(ctx, config, debug):
+def cli(ctx, config, debug, finder, finder_all, dry_run):
     """Webseries scraper - Download and catalog web series torrents"""
     # Load configuration
     ctx.ensure_object(dict)
@@ -24,6 +27,34 @@ def cli(ctx, config, debug):
 
     # Setup logging
     setup_logging(ctx.obj['config'])
+
+    # If no subcommand is invoked, handle finder options
+    if ctx.invoked_subcommand is None:
+        if finder or finder_all:
+            import series_ai_matcher
+
+            if finder:
+                click.echo(f"🔍 AI Matching series ID: {finder}")
+                result = series_ai_matcher.match_series_with_ai(finder, dry_run=dry_run)
+                if result:
+                    click.echo(f"✓ AI matched series {finder}")
+                else:
+                    click.echo(f"✗ AI matching failed for series {finder}")
+            elif finder_all:
+                click.echo("🔍 AI Matching all series without TMDB IDs...")
+                results = series_ai_matcher.match_all_series_with_ai(dry_run=dry_run)
+
+                click.echo("\n" + "=" * 80)
+                click.echo("AI MATCHING SUMMARY")
+                click.echo("=" * 80)
+                click.echo(f"Total series: {results.get('total', 0)}")
+                click.echo(f"Matched: ✓ {results.get('matched', 0)}")
+                click.echo(f"Failed: ✗ {results.get('failed', 0)}")
+                click.echo("=" * 80)
+
+                if dry_run:
+                    click.echo("DRY RUN - No changes were made")
+            ctx.exit()
 
 
 # Import subcommands

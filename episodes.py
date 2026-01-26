@@ -15,6 +15,8 @@ import click
 from pathlib import Path
 from db import get_connection
 from logger import get_logger
+import tmdb_cache
+import progress
 
 logger = get_logger(__name__)
 
@@ -197,7 +199,7 @@ def format_duration(minutes: float) -> str:
     return f"{int(minutes)}"
 
 
-def fetch_tmdb_episode(tmdb_id: int, season_number: int, episode_number: int) -> dict | None:
+def fetch_tmdb_episode(tmdb_id: int, season_number: int, episode_number: int, use_cache: bool = True) -> dict | None:
     """
     Fetch detailed episode data from TMDB
 
@@ -205,6 +207,7 @@ def fetch_tmdb_episode(tmdb_id: int, season_number: int, episode_number: int) ->
         tmdb_id: TMDB series ID
         season_number: Season number (1-based)
         episode_number: Episode number (1-based)
+        use_cache: Whether to use cache (default True)
 
     Returns:
         dict with episode data or None
@@ -212,6 +215,16 @@ def fetch_tmdb_episode(tmdb_id: int, season_number: int, episode_number: int) ->
     if not TMDB_API_KEY:
         logger.warning("TMDB_API_KEY not set, skipping episode metadata fetch")
         return None
+
+    # Check cache first - use a unique key for this episode
+    cache_key = f'/tv/{tmdb_id}/season/{season_number}/episode/{episode_number}'
+    cache_params = {}  # No params for this endpoint
+
+    if use_cache:
+        cached = tmdb_cache.get(cache_key, cache_params)
+        if cached is not None:
+            logger.debug(f"Using cached episode data for S{season_number:02d}E{episode_number:02d}")
+            return cached
 
     import requests
 
@@ -299,7 +312,243 @@ def fetch_tmdb_episode(tmdb_id: int, season_number: int, episode_number: int) ->
     except requests.RequestException as e:
         logger.debug(f"Error fetching external_ids: {e}")
 
+    # Cache the complete result
+    if use_cache and result:
+        tmdb_cache.set(cache_key, cache_params, result)
+
     return result
+
+
+def search_tmdb_series(query: str, year: int = None, use_cache: bool = True) -> list[dict]:
+    """
+    Search TMDB for TV series by name
+
+    Args:
+        query: Series name to search for
+        year: Optional year to filter results
+        use_cache: Whether to use cache (default True)
+
+    Returns:
+        List of matching series dicts with keys: id, name, original_name,
+        first_air_date, overview, poster_path, vote_average, popularity
+    """
+    if not TMDB_API_KEY:
+        logger.warning("TMDB_API_KEY not set, skipping series search")
+        return []
+
+    # Check cache first
+    cache_params = {'query': query, 'type': 'tv'}
+    if year:
+        cache_params['first_air_date_year'] = year
+
+    if use_cache:
+        cached = tmdb_cache.get('/search/tv', cache_params)
+        if cached is not None:
+            logger.debug(f"Using cached search results for '{query}'")
+            return cached
+
+    import requests
+
+    try:
+        params = {
+            'api_key': TMDB_API_KEY,
+            'query': query,
+            'type': 'tv',  # Only TV series
+        }
+        if year:
+            params['first_air_date_year'] = year
+
+        response = requests.get(
+            'https://api.themoviedb.org/3/search/tv',
+            params=params,
+            timeout=30
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        results = data.get('results', [])
+        logger.info(f"TMDB search for '{query}' found {len(results)} results")
+
+        # Cache the results
+        if use_cache and results:
+            tmdb_cache.set('/search/tv', cache_params, results)
+
+        return results
+
+    except requests.RequestException as e:
+        logger.error(f"Error searching TMDB for '{query}': {e}")
+        return []
+
+
+def match_series_from_tmdb(series_id: int, dry_run: bool = False) -> dict | None:
+    """
+    Auto-match a series from database to TMDB and update with metadata
+
+    Args:
+        series_id: Database series ID
+        dry_run: If True, don't make changes
+
+    Returns:
+        Matched TMDB series info or None
+    """
+    conn = get_connection()
+    if not conn:
+        return None
+
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        # Get series info from database
+        cursor.execute('''
+            SELECT id, title, name, year
+            FROM series
+            WHERE id = %s
+        ''', (series_id,))
+        series = cursor.fetchone()
+
+        if not series:
+            logger.error(f"Series {series_id} not found in database")
+            return None
+
+        # Use title or name for search
+        search_title = series.get('name') or series.get('title') or ''
+        if not search_title:
+            logger.warning(f"Series {series_id} has no title/name to search")
+            return None
+
+        # Clean the title for better search results
+        # Simple approach: truncate at season/episode markers
+        clean_title = search_title
+
+        # Remove Web Series suffixes first
+        for suffix in [' [Web Series]', ' - Web Series', ' (Web Series)', '[Web Series]']:
+            clean_title = clean_title.replace(suffix, '')
+
+        # Extract year from title if not in database
+        if not series.get('year'):
+            year_match = re.search(r'\((\d{4})\)', clean_title)
+            if year_match:
+                year = int(year_match.group(1))
+                series['year'] = year
+                # Remove the year from the title
+                clean_title = clean_title[:year_match.start()] + clean_title[year_match.end():]
+
+        # Find and truncate at season/episode markers
+        # Look for patterns like " S01", " S01E01", " S01 EP", " Season 1"
+        season_patterns = [
+            r'\s+[Ss]\d+',  # S01, S02
+            r'\s+Season\s+\d+',  # Season 1
+            r'\s+S\d+\s*[Ee]',  # S01E
+            r'\s+[Ss]\d+\s+[Ee][Pp]',  # S01 EP
+        ]
+        for pattern in season_patterns:
+            match = re.search(pattern, clean_title)
+            if match:
+                clean_title = clean_title[:match.start()]
+                break
+
+        # Strip whitespace and trailing punctuation
+        clean_title = clean_title.strip().rstrip(' -:,')
+
+        logger.info(f"Searching TMDB for: '{clean_title}' (year: {series.get('year')})")
+
+        # Search TMDB
+        results = search_tmdb_series(clean_title, series.get('year'))
+
+        if not results:
+            logger.warning(f"No TMDB results found for '{clean_title}'")
+            return None
+
+        # Try to find the best match
+        best_match = None
+        best_score = 0
+
+        for result in results:
+            score = 0
+            result_name = result.get('name', '').lower()
+            result_original = result.get('original_name', '').lower()
+            search_lower = clean_title.lower()
+
+            # Exact name match
+            if result_name == search_lower or result_original == search_lower:
+                score += 100
+            # Contains match
+            elif search_lower in result_name or search_lower in result_original:
+                score += 50
+            # Word overlap
+            search_words = set(search_lower.split())
+            result_words = set(result_name.split())
+            overlap = len(search_words & result_words)
+            if overlap > 0:
+                score += overlap * 10
+
+            # Year match (if available)
+            if series.get('year'):
+                result_year = result.get('first_air_date', '')[:4]
+                if result_year == str(series.get('year')):
+                    score += 30
+
+            # Popularity boost
+            score += min(result.get('popularity', 0) / 10, 20)
+
+            if score > best_score:
+                best_score = score
+                best_match = result
+
+        # Only accept matches with reasonable confidence
+        if best_score < 30:
+            logger.warning(f"TMDB match score too low ({best_score}) for '{clean_title}'")
+            logger.info(f"Top result: {results[0].get('name')} (TMDB: {results[0].get('id')})")
+            # Still return the top result if it's the only one
+            if len(results) == 1:
+                best_match = results[0]
+            else:
+                return None
+
+        tmdb_id = best_match.get('id')
+        logger.info(f"Matched '{clean_title}' to TMDB: {best_match.get('name')} (ID: {tmdb_id}, score: {best_score})")
+
+        if dry_run:
+            logger.info(f"[DRY RUN] Would update series {series_id} with TMDB ID {tmdb_id}")
+            return best_match
+
+        # Update series with TMDB ID and basic metadata
+        update_fields = {
+            'tmdb_id': tmdb_id,
+        }
+
+        # Also update other available fields if they're not set
+        if best_match.get('name'):
+            update_fields['name'] = best_match['name']
+        if best_match.get('overview'):
+            update_fields['summary'] = best_match['overview'][:500]  # Truncate to fit column
+        if best_match.get('vote_average'):
+            update_fields['rating'] = best_match['vote_average']
+        if best_match.get('first_air_date'):
+            update_fields['first_air_date'] = best_match['first_air_date']
+        if best_match.get('poster_path'):
+            update_fields['poster_url'] = f"https://image.tmdb.org/t/p/original{best_match['poster_path']}"
+
+        # Build UPDATE query
+        set_clause = ', '.join([f"{field} = %s" for field in update_fields.keys()])
+        values = list(update_fields.values()) + [series_id]
+
+        cursor.execute(
+            f"UPDATE series SET {set_clause} WHERE id = %s",
+            values
+        )
+        conn.commit()
+
+        logger.info(f"Updated series {series_id} with TMDB ID {tmdb_id}")
+        return best_match
+
+    except Exception as e:
+        logger.error(f"Error matching series {series_id}: {e}")
+        return None
+
+    finally:
+        cursor.close()
+        conn.close()
 
 
 def update_episode_metadata(episode_id: int, metadata: dict, dry_run: bool = False) -> bool:
@@ -416,24 +665,42 @@ def fetch_and_update_episode_metadata(series_id: int = None, limit: int = 50, dr
         logger.info(f"Found {len(episodes)} episodes to process")
 
         updated = 0
+        failed = 0
+
+        # Create progress tracker
+        prog = progress.ProgressTracker(
+            total=len(episodes),
+            description="Fetching metadata",
+            mode="bar",
+            show_eta=True
+        )
 
         for ep in episodes:
             tmdb_id = ep['tmdb_id']
             season_num = ep['season_number']
             ep_num = ep['episode_number']
+            series_title = ep['series_title'][:30]
 
-            logger.info(f"\nProcessing: {ep['series_title'][:50]}... S{season_num:02d}E{ep_num:02d}")
+            # Update progress before processing
+            ep_desc = f"{series_title}... S{season_num:02d}E{ep_num:02d}"
+            prog.update(0, f"Fetching {ep_desc}")
 
             # Fetch from TMDB
             metadata = fetch_tmdb_episode(tmdb_id, season_num, ep_num)
             if not metadata:
-                logger.warning(f"Could not fetch metadata for S{season_num:02d}E{ep_num:02d}")
+                failed += 1
+                prog.update(1, f"✗ {ep_desc}")
                 continue
 
             # Update database
             if update_episode_metadata(ep['id'], metadata, dry_run):
                 updated += 1
+                prog.update(1, f"✓ {ep_desc}")
+            else:
+                failed += 1
+                prog.update(1, f"✗ {ep_desc}")
 
+        prog.finish(f"Summary: {updated} updated, {failed} failed")
         return updated
 
     finally:
@@ -479,6 +746,259 @@ def get_episodes_from_db(series_filter: str = None, season_filter: int = None) -
     except Exception as e:
         logger.error(f"Database error: {e}")
         return []
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def fetch_tmdb_series_details(tmdb_id: int, use_cache: bool = True) -> dict | None:
+    """
+    Fetch detailed series information from TMDB
+
+    Args:
+        tmdb_id: TMDB series ID
+        use_cache: Whether to use cache
+
+    Returns:
+        Dict with series details including episode counts per season, or None
+    """
+    if not TMDB_API_KEY:
+        logger.warning("TMDB_API_KEY not set, skipping series details fetch")
+        return None
+
+    # Check cache first
+    cache_key = f'/tv/{tmdb_id}'
+    cache_params = {}  # No params for this endpoint
+
+    if use_cache:
+        cached = tmdb_cache.get(cache_key, cache_params)
+        if cached is not None:
+            logger.debug(f"Using cached series details for TMDB ID {tmdb_id}")
+            return cached
+
+    import requests
+
+    try:
+        # Fetch series details
+        response = requests.get(
+            f'https://api.themoviedb.org/3/tv/{tmdb_id}',
+            params={'api_key': TMDB_API_KEY},
+            timeout=30
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        result = {
+            'tmdb_id': data.get('id'),
+            'name': data.get('name'),
+            'overview': data.get('overview'),
+            'number_of_seasons': data.get('number_of_seasons'),
+            'number_of_episodes': data.get('number_of_episodes'),
+            'seasons': {}
+        }
+
+        # Get episode count per season
+        for season in data.get('seasons', []):
+            season_number = season.get('season_number')
+            if season_number > 0:  # Skip specials (season 0)
+                result['seasons'][season_number] = {
+                    'episode_count': season.get('episode_count'),
+                    'name': season.get('name'),
+                    'air_date': season.get('air_date')
+                }
+
+        # Cache the result
+        if use_cache:
+            tmdb_cache.set(cache_key, cache_params, result)
+
+        return result
+
+    except requests.RequestException as e:
+        logger.error(f"Error fetching series details for TMDB ID {tmdb_id}: {e}")
+        return None
+
+
+def validate_metadata(series_id: int = None) -> dict:
+    """
+    Validate metadata completeness and accuracy
+
+    Args:
+        series_id: Optional series ID to validate, or None for all
+
+    Returns:
+        Dict with validation results
+    """
+    conn = get_connection()
+    if not conn:
+        return {'error': 'Could not connect to database'}
+
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        # Build query
+        if series_id:
+            query = '''
+                SELECT s.id, s.title, s.name, s.tmdb_id, s.total_seasons, s.total_episodes,
+                       COUNT(DISTINCT e.id) as episode_count
+                FROM series s
+                LEFT JOIN seasons sea ON s.id = sea.series_id
+                LEFT JOIN episodes e ON sea.id = e.season_id
+                WHERE s.id = %s
+                GROUP BY s.id
+            '''
+            cursor.execute(query, (series_id,))
+            series_list = cursor.fetchall()
+        else:
+            query = '''
+                SELECT s.id, s.title, s.name, s.tmdb_id, s.total_seasons, s.total_episodes,
+                       COUNT(DISTINCT e.id) as episode_count
+                FROM series s
+                LEFT JOIN seasons sea ON s.id = sea.series_id
+                LEFT JOIN episodes e ON sea.id = e.season_id
+                GROUP BY s.id
+                ORDER BY s.title
+            '''
+            cursor.execute(query)
+            series_list = cursor.fetchall()
+
+        results = {
+            'total_series': len(series_list),
+            'valid': 0,
+            'warnings': 0,
+            'errors': 0,
+            'infos': 0,
+            'issues': []
+        }
+
+        for series in series_list:
+            series_name = series.get('name') or series.get('title', 'Unknown')
+            series_id_db = series.get('id')
+            tmdb_id = series.get('tmdb_id')
+
+            # Collect all issues for this series
+            series_issues = []
+
+            # Skip if no TMDB ID
+            if not tmdb_id:
+                series_issues.append({
+                    'series_id': series_id_db,
+                    'series_name': series_name,
+                    'level': 'warning',
+                    'message': 'No TMDB ID - cannot validate'
+                })
+                results['warnings'] += 1
+                results['issues'].extend(series_issues)
+                continue
+
+            # Fetch TMDB details
+            tmdb_details = fetch_tmdb_series_details(tmdb_id)
+            if not tmdb_details:
+                series_issues.append({
+                    'series_id': series_id_db,
+                    'series_name': series_name,
+                    'level': 'error',
+                    'message': 'Could not fetch details from TMDB'
+                })
+                results['errors'] += 1
+                results['issues'].extend(series_issues)
+                continue
+
+            # Check total episode count
+            db_episode_count = series.get('episode_count', 0)
+            tmdb_episode_count = tmdb_details.get('number_of_episodes', 0)
+
+            if db_episode_count != tmdb_episode_count:
+                series_issues.append({
+                    'series_id': series_id_db,
+                    'series_name': series_name,
+                    'level': 'warning',
+                    'message': f'Episode count mismatch (DB: {db_episode_count}, TMDB: {tmdb_episode_count})'
+                })
+                results['warnings'] += 1
+
+            # Check each season for missing episodes
+            cursor.execute('''
+                SELECT sea.season_number, COUNT(e.id) as episode_count
+                FROM seasons sea
+                LEFT JOIN episodes e ON sea.id = e.season_id
+                WHERE sea.series_id = %s
+                GROUP BY sea.season_number
+            ''', (series_id_db,))
+
+            db_seasons = {row['season_number']: row['episode_count'] for row in cursor.fetchall()}
+
+            all_missing = {}  # season -> list of missing episodes
+            for season_num, season_info in tmdb_details.get('seasons', {}).items():
+                tmdb_season_count = season_info.get('episode_count', 0)
+                db_season_count = db_seasons.get(season_num, 0)
+
+                if db_season_count < tmdb_season_count:
+                    # Find which episodes are missing
+                    cursor.execute('''
+                        SELECT episode_number FROM episodes e
+                        JOIN seasons sea ON e.season_id = sea.id
+                        WHERE sea.series_id = %s AND sea.season_number = %s
+                    ''', (series_id_db, season_num))
+
+                    db_episodes = {row['episode_number'] for row in cursor.fetchall()}
+                    missing = []
+                    for ep in range(1, tmdb_season_count + 1):
+                        if ep not in db_episodes:
+                            missing.append(ep)
+
+                    if missing:
+                        all_missing[season_num] = missing
+
+            # Add missing episode issues (grouped by series)
+            if all_missing:
+                missing_parts = []
+                for season_num, missing in sorted(all_missing.items()):
+                    season_num_int = int(season_num)  # Convert from string to int
+                    if len(missing) <= 5:
+                        ep_str = ', '.join(f'E{ep:02d}' for ep in missing)
+                    else:
+                        ep_str = "E{:02d}-E{:02d}".format(missing[0], missing[-1])
+                    missing_parts.append("S{:02d}: {}".format(season_num_int, ep_str))
+
+                series_issues.append({
+                    'series_id': series_id_db,
+                    'series_name': series_name,
+                    'level': 'warning',
+                    'message': "Missing episodes: " + "; ".join(missing_parts)
+                })
+                results['warnings'] += 1
+
+            # Check for episodes without metadata
+            cursor.execute('''
+                SELECT COUNT(*) as count
+                FROM episodes e
+                JOIN seasons sea ON e.season_id = sea.id
+                WHERE sea.series_id = %s AND (e.name IS NULL OR e.name = '')
+            ''', (series_id_db,))
+
+            no_metadata = cursor.fetchone()['count']
+            if no_metadata > 0:
+                series_issues.append({
+                    'series_id': series_id_db,
+                    'series_name': series_name,
+                    'level': 'info',
+                    'message': f'{no_metadata} episodes without metadata'
+                })
+                results['infos'] += 1
+
+            # Add all issues for this series
+            results['issues'].extend(series_issues)
+
+            # Mark as valid if no issues
+            if not series_issues:
+                results['valid'] += 1
+
+        return results
+
+    except Exception as e:
+        logger.error(f"Error validating metadata: {e}")
+        return {'error': str(e)}
 
     finally:
         cursor.close()
@@ -559,14 +1079,26 @@ def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[
     skipped = 0
     errors = 0
 
+    # Create progress tracker for import
+    prog = progress.ProgressTracker(
+        total=len(episodes),
+        description="Importing episodes",
+        mode="bar",
+        show_eta=True
+    )
+
     for ep in episodes:
         series_name = ep['series']
         season_num = ep['season']
         episode_num = ep['episode']
+        ep_desc = f"{series_name[:20]}... S{season_num:02d}E{episode_num:02d}"
+
+        prog.update(0, f"Processing {ep_desc}")
 
         if not episode_num:
             logger.debug(f"Skipping (no episode number): {ep['filename']}")
             skipped += 1
+            prog.update(1, f"⊘ {ep_desc} (no episode number)")
             continue
 
         # Try to find matching season
@@ -591,6 +1123,7 @@ def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[
         if not season_id:
             logger.warning(f"No matching season found: {series_name} S{season_num:02d}")
             skipped += 1
+            prog.update(1, f"✗ {ep_desc} (no season match)")
             continue
 
         # Find matching torrent by episode number
@@ -665,15 +1198,79 @@ def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[
                         ''', (season_id, episode_num, ep['path'], ep['size_mb'], quality))
                 conn.commit()
                 imported += 1
-                logger.info(f"Imported: S{season_num:02d}E{episode_num:02d}")
+                logger.info(f"Imported: S{season_num:02d}E{season_num:02d}")
+                prog.update(1, f"✓ {ep_desc}")
+
             except Exception as e:
                 logger.error(f"Failed to insert S{season_num:02d}E{episode_num:02d}: {e}")
                 errors += 1
+                prog.update(1, f"✗ {ep_desc} (error)")
+                continue
+
+            # Auto-fetch episode metadata from TMDB (moved outside try block)
+            if TMDB_API_KEY:
+                try:
+                    # Get series ID and TMDB ID
+                    cursor.execute('''
+                        SELECT s.id, s.tmdb_id FROM series s
+                        JOIN seasons sea ON s.id = sea.series_id
+                        WHERE sea.id = %s
+                    ''', (season_id,))
+                    series_row = cursor.fetchone()
+
+                    # Handle both dict and tuple result formats
+                    if isinstance(series_row, dict):
+                        series_id_db = series_row.get('id')
+                        tmdb_id = series_row.get('tmdb_id')
+                    elif series_row:
+                        series_id_db = series_row[0]
+                        tmdb_id = series_row[1]
+                    else:
+                        series_id_db = None
+                        tmdb_id = None
+
+                    # Auto-match series if no TMDB ID
+                    if not tmdb_id and series_id_db:
+                        logger.info(f"  → Series has no TMDB ID, attempting auto-match...")
+                        match_result = match_series_from_tmdb(series_id_db, dry_run=False)
+                        if match_result:
+                            tmdb_id = match_result.get('id')
+                            logger.info(f"  → Auto-matched to TMDB ID: {tmdb_id}")
+
+                    # Fetch episode metadata if we have a TMDB ID
+                    if tmdb_id:
+                        metadata = fetch_tmdb_episode(tmdb_id, season_num, episode_num)
+                        if metadata:
+                            # Get the inserted episode ID
+                            cursor.execute(
+                                'SELECT id FROM episodes WHERE season_id = %s AND episode_number = %s',
+                                (season_id, episode_num)
+                            )
+                            episode_row = cursor.fetchone()
+                            if episode_row:
+                                # Handle both dict and tuple result formats
+                                episode_id = episode_row.get('id') if isinstance(episode_row, dict) else episode_row[0]
+                                # Update with metadata
+                                fields = []
+                                values = []
+                                for field in ['imdb_id', 'name', 'overview', 'air_date', 'still_url',
+                                              'vote_average', 'vote_count', 'director', 'writer', 'guest_stars']:
+                                    if field in metadata and metadata[field] is not None:
+                                        fields.append(f"{field} = %s")
+                                        values.append(metadata[field])
+                                if fields:
+                                    values.append(episode_id)
+                                    sql = f"UPDATE episodes SET {', '.join(fields)} WHERE id = %s"
+                                    cursor.execute(sql, tuple(values))
+                                    conn.commit()
+                                    logger.info(f"  → Fetched metadata: {metadata.get('name', 'N/A')}")
+                except Exception as e:
+                    logger.warning(f"  → Could not fetch metadata: {e}")
 
     cursor.close()
     conn.close()
 
-    logger.info(f"Import complete: {imported} imported, {skipped} skipped" + (f", {errors} errors" if errors else ""))
+    prog.finish(f"Import complete: {imported} imported, {skipped} skipped" + (f", {errors} errors" if errors else ""))
     return imported, skipped
 
 
@@ -681,16 +1278,197 @@ def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[
 @click.option('--scan', is_flag=True, help='Scan completed folder for episodes')
 @click.option('--import-db', is_flag=True, help='Import scanned episodes into database')
 @click.option('--fetch-metadata', is_flag=True, help='Fetch episode metadata from TMDB')
+@click.option('--match-series', type=int, help='Match a series from DB to TMDB by series ID')
+@click.option('--match-all-series', is_flag=True, help='Auto-match all series without TMDB IDs')
+@click.option('--finder', type=int, help='Match a series using AI poster analysis by series ID')
+@click.option('--finder-all', is_flag=True, help='Match all series without tmdb_id using AI poster analysis')
+@click.option('--auto-import', is_flag=True, help='Run full workflow: scan → import → match → fetch-metadata')
+@click.option('--validate', is_flag=True, help='Validate metadata completeness and accuracy')
+@click.option('--cache-stats', is_flag=True, help='Show TMDB cache statistics')
+@click.option('--cache-clear', is_flag=True, help='Clear all TMDB cache')
+@click.option('--cache-cleanup', is_flag=True, help='Remove expired cache entries')
 @click.option('--dry-run', is_flag=True, help='Show what would be imported without actually importing')
-@click.option('--series-id', type=int, help='Process specific series by ID (for --fetch-metadata)')
+@click.option('--series-id', type=int, help='Process specific series by ID (for --fetch-metadata and --validate)')
 @click.option('--limit', type=int, default=50, help='Max episodes to process (for --fetch-metadata)')
 @click.option('--series', help='Filter by series name')
 @click.option('--season', type=int, help='Filter by season number')
 @click.option('--missing', is_flag=True, help='Show missing episodes')
 @click.option('--completed-dir', default=DEFAULT_COMPLETED_DIR, help='Completed downloads folder')
 @click.pass_context
-def episodes(ctx, scan, import_db, fetch_metadata, dry_run, series_id, limit, series, season, missing, completed_dir):
+def episodes(ctx, scan, import_db, fetch_metadata, match_series, match_all_series, finder, finder_all, auto_import, validate, cache_stats, cache_clear, cache_cleanup, dry_run, series_id, limit, series, season, missing, completed_dir):
     """Find and list episodes from completed downloads"""
+
+    # Cache management
+    if cache_stats:
+        stats = tmdb_cache.get_stats()
+        click.echo("\nTMDB Cache Statistics:")
+        click.echo("=" * 50)
+        click.echo(f"Total cached entries: {stats['total_files']}")
+        click.echo(f"Total size: {stats['total_size_bytes'] / 1024:.1f} KB")
+        click.echo(f"Expired entries: {stats['expired_count']}")
+
+        if stats['oldest_entry']:
+            import time
+            oldest_age = int(time.time() - stats['oldest_entry'])
+            newest_age = int(time.time() - stats['newest_entry'])
+            click.echo(f"Oldest entry: {oldest_age // 86400}d {oldest_age % 86400 // 3600}h ago")
+            click.echo(f"Newest entry: {newest_age // 3600}h ago")
+        click.echo("")
+        return
+
+    if cache_clear:
+        if dry_run:
+            click.echo("[DRY RUN] Would clear all cache")
+        else:
+            count = tmdb_cache.clear()
+            click.echo(f"Cleared {count} cache entries")
+        return
+
+    if cache_cleanup:
+        if dry_run:
+            click.echo("[DRY RUN] Would clean up expired cache entries")
+        else:
+            count = tmdb_cache.cleanup_expired()
+            click.echo(f"Cleaned up {count} expired cache entries")
+        return
+
+    # Auto-import workflow
+    if auto_import:
+        logger.info("=" * 60)
+        logger.info("AUTO-IMPORT WORKFLOW")
+        logger.info("=" * 60)
+
+        results = {
+            'scanned': 0,
+            'imported': 0,
+            'skipped': 0,
+            'matched': 0,
+            'match_failed': 0,
+            'metadata_fetched': 0,
+        }
+
+        # Step 1: Scan completed folder
+        logger.info("\n[1/4] Scanning completed folder...")
+        eps = scan_completed_folder(completed_dir)
+        results['scanned'] = len(eps)
+
+        if eps:
+            logger.info(f"Found {len(eps)} episode file(s)")
+        else:
+            logger.info("No new episode files found")
+            return
+
+        # Step 2: Import episodes
+        logger.info("\n[2/4] Importing episodes to database...")
+        if dry_run:
+            logger.info("[DRY RUN] Skipping import")
+        else:
+            imported, skipped = import_episodes_to_db(eps, dry_run=False)
+            results['imported'] = imported
+            results['skipped'] = skipped
+
+        # Step 3: Match series without TMDB IDs
+        logger.info("\n[3/4] Matching series to TMDB...")
+        if dry_run:
+            logger.info("[DRY RUN] Skipping series matching")
+        else:
+            conn = get_connection()
+            if conn:
+                cursor = conn.cursor(dictionary=True)
+                try:
+                    cursor.execute('''
+                        SELECT id, title, name, year
+                        FROM series
+                        WHERE tmdb_id IS NULL
+                        ORDER BY id
+                    ''')
+                    series_list = cursor.fetchall()
+
+                    if series_list:
+                        logger.info(f"Found {len(series_list)} series without TMDB IDs")
+
+                        for s in series_list:
+                            series_id_db = s.get('id')
+                            title = s.get('name') or s.get('title') or 'Unknown'
+
+                            result = match_series_from_tmdb(series_id_db, dry_run=False)
+                            if result:
+                                results['matched'] += 1
+                            else:
+                                results['match_failed'] += 1
+
+                finally:
+                    cursor.close()
+                    conn.close()
+
+        # Step 4: Fetch episode metadata
+        logger.info("\n[4/4] Fetching episode metadata...")
+        if dry_run:
+            logger.info("[DRY RUN] Skipping metadata fetch")
+        else:
+            updated = fetch_and_update_episode_metadata(limit=100, dry_run=False)
+            results['metadata_fetched'] = updated
+
+        # Final summary
+        logger.info("\n" + "=" * 60)
+        logger.info("AUTO-IMPORT SUMMARY")
+        logger.info("=" * 60)
+        logger.info(f"Files scanned:     {results['scanned']}")
+        logger.info(f"Episodes imported: {results['imported']}")
+        logger.info(f"Episodes skipped:  {results['skipped']}")
+        logger.info(f"Series matched:    {results['matched']}")
+        logger.info(f"Series failed:     {results['match_failed']}")
+        logger.info(f"Metadata fetched:  {results['metadata_fetched']}")
+        logger.info("=" * 60)
+
+        if dry_run:
+            logger.info("DRY RUN - No changes were made")
+
+        return
+
+    # Validate metadata
+    if validate:
+        click.echo("\nValidating metadata...")
+        click.echo("=" * 60)
+
+        results = validate_metadata(series_id=series_id)
+
+        if 'error' in results:
+            logger.error(f"Validation error: {results['error']}")
+            return
+
+        # Display results
+        if results.get('total_series', 0) > 0:
+            click.echo(f"\nValidated {results['total_series']} series(s)\n")
+
+        # Group issues by level
+        warnings = [i for i in results.get('issues', []) if i['level'] == 'warning']
+        errors = [i for i in results.get('issues', []) if i['level'] == 'error']
+        infos = [i for i in results.get('issues', []) if i['level'] == 'info']
+
+        # Display errors
+        for issue in errors:
+            click.echo(f"🔴 Series {issue['series_id']}: {issue['series_name']}")
+            click.echo(f"   {issue['message']}")
+
+        # Display warnings
+        for issue in warnings:
+            click.echo(f"⚠️  Series {issue['series_id']}: {issue['series_name']}")
+            click.echo(f"   {issue['message']}")
+
+        # Display info
+        for issue in infos:
+            click.echo(f"ℹ️  Series {issue['series_id']}: {issue['series_name']}")
+            click.echo(f"   {issue['message']}")
+
+        # Summary
+        click.echo("\n" + "=" * 60)
+        click.echo(f"Summary: {results['valid']} valid, {results['warnings']} warnings, {results['errors']} errors")
+
+        if results['warnings'] == 0 and results['errors'] == 0:
+            click.echo("✓ All metadata is complete and accurate!")
+
+        return
 
     # Fetch metadata from TMDB
     if fetch_metadata:
@@ -708,6 +1486,111 @@ def episodes(ctx, scan, import_db, fetch_metadata, dry_run, series_id, limit, se
         logger.info(f"Updated {updated} episodes")
         if dry_run:
             logger.info("DRY RUN - No changes were made")
+        return
+
+    # Match series to TMDB
+    if match_series or match_all_series:
+        if dry_run:
+            logger.info("=" * 60)
+            logger.info("DRY RUN MODE - No changes will be made")
+            logger.info("=" * 60)
+
+        if match_series:
+            # Match a specific series
+            logger.info(f"Matching series ID: {match_series}")
+            result = match_series_from_tmdb(match_series, dry_run=dry_run)
+            if result:
+                logger.info(f"✓ Matched to TMDB: {result.get('name')} (ID: {result.get('id')})")
+            else:
+                logger.warning("✗ Could not match series to TMDB")
+        elif match_all_series:
+            # Match all series without TMDB IDs
+            conn = get_connection()
+            if not conn:
+                logger.error("Could not connect to database")
+                return
+
+            cursor = conn.cursor(dictionary=True)
+            try:
+                cursor.execute('''
+                    SELECT id, title, name, year
+                    FROM series
+                    WHERE tmdb_id IS NULL
+                    ORDER BY id
+                ''')
+                series_list = cursor.fetchall()
+
+                if not series_list:
+                    logger.info("No series found without TMDB IDs")
+                    return
+
+                logger.info(f"Found {len(series_list)} series without TMDB IDs")
+                matched = 0
+                failed = 0
+
+                # Create progress tracker
+                prog = progress.ProgressTracker(
+                    total=len(series_list),
+                    description="Matching series",
+                    mode="bar",
+                    show_eta=True
+                )
+
+                for s in series_list:
+                    series_id = s.get('id')
+                    title = s.get('name') or s.get('title') or 'Unknown'
+                    short_title = title[:40] + "..." if len(title) > 40 else title
+
+                    # Update progress before processing
+                    prog.update(0, f"Matching {short_title}")
+
+                    result = match_series_from_tmdb(series_id, dry_run=dry_run)
+                    if result:
+                        matched += 1
+                        # Update progress with success
+                        prog.update(1, f"✓ {short_title} → {result.get('name')}")
+                    else:
+                        failed += 1
+                        # Update progress with failure
+                        prog.update(1, f"✗ {short_title}")
+
+                prog.finish(f"Summary: {matched} matched, {failed} failed")
+                if dry_run:
+                    logger.info("DRY RUN - No changes were made")
+
+            finally:
+                cursor.close()
+                conn.close()
+        return
+
+    # AI Matching with poster analysis
+    if finder or finder_all:
+        # Import the AI matcher module
+        import series_ai_matcher
+
+        if finder:
+            # Match a specific series using AI
+            logger.info(f"AI Matching series ID: {finder}")
+            result = series_ai_matcher.match_series_with_ai(finder, dry_run=dry_run)
+            if result:
+                logger.info(f"✓ AI matched series {finder}")
+            else:
+                logger.warning(f"✗ AI matching failed for series {finder}")
+        elif finder_all:
+            # Match all series without TMDB IDs using AI
+            logger.info("AI Matching all series without TMDB IDs...")
+            results = series_ai_matcher.match_all_series_with_ai(dry_run=dry_run)
+
+            click.echo("\n" + "=" * 80)
+            click.echo("AI MATCHING SUMMARY")
+            click.echo("=" * 80)
+            click.echo(f"Total series: {results.get('total', 0)}")
+            click.echo(f"Matched: ✓ {results.get('matched', 0)}")
+            click.echo(f"Failed: ✗ {results.get('failed', 0)}")
+            click.echo("=" * 80)
+
+            if dry_run:
+                logger.info("DRY RUN - No changes were made")
         return
 
     # Scan completed folder (needed for both --scan and --import-db)
