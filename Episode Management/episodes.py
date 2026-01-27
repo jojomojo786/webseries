@@ -25,11 +25,15 @@ from db import get_connection
 from logger import get_logger
 import tmdb_cache
 import progress
+import openrouter_client
 
 logger = get_logger(__name__)
 
 # TMDB API key
 TMDB_API_KEY = os.environ.get('TMDB_API_KEY', '')
+
+# OpenRouter API key for AI episode validation
+OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY', '')
 
 # Default completed folder (relative to new directory structure)
 script_dir = Path(__file__).parent.parent
@@ -39,12 +43,13 @@ DEFAULT_COMPLETED_DIR = str(script_dir / 'Data & Cache' / 'downloads' / 'complet
 VIDEO_EXTENSIONS = {'.mkv', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v'}
 
 
-def scan_completed_folder(completed_dir: str = DEFAULT_COMPLETED_DIR) -> list[dict]:
+def scan_completed_folder(completed_dir: str = DEFAULT_COMPLETED_DIR, use_ai: bool = False) -> list[dict]:
     """
     Scan completed folder for video files and extract episode info
 
     Args:
         completed_dir: Path to completed downloads folder
+        use_ai: Use AI fallback for uncertain episode numbers
 
     Returns:
         List of episode dicts
@@ -65,6 +70,18 @@ def scan_completed_folder(completed_dir: str = DEFAULT_COMPLETED_DIR) -> list[di
                 # Extract series name and episode info
                 series_name = extract_series_name(filename)
                 season, episode = extract_season_episode(filename)
+
+                # Use AI fallback if enabled and episode is uncertain
+                if use_ai:
+                    folder_context = os.path.basename(root)
+                    season, episode = validate_with_ai_fallback(
+                        filename=filename,
+                        series_name=series_name,
+                        extracted_season=season,
+                        extracted_episode=episode,
+                        context=f"Folder: {folder_context}"
+                    )
+
                 quality = extract_quality(filename)
                 size_bytes = os.path.getsize(filepath)
                 size_mb = int(size_bytes / (1024 * 1024))
@@ -147,6 +164,56 @@ def extract_season_episode(filename: str) -> tuple:
 
     # Default to season 1
     return (1, None)
+
+
+def validate_with_ai_fallback(
+    filename: str,
+    series_name: str,
+    extracted_season: int,
+    extracted_episode: int = None,
+    context: str = ""
+) -> tuple[int, int | None]:
+    """
+    Use AI to validate/correct episode numbers when regex is uncertain
+
+    Args:
+        filename: Video filename
+        series_name: Extracted series name
+        extracted_season: Season number from regex
+        extracted_episode: Episode number from regex (None if uncertain)
+        context: Additional context (folder name, etc.)
+
+    Returns:
+        Tuple of (season, episode) corrected by AI if available
+    """
+    # Use AI as fallback when:
+    # 1. No episode number was found
+    # 2. Series name is very short (likely parsing error)
+    # 3. Filename contains ambiguous patterns
+
+    client = openrouter_client.get_client()
+    if not client.is_available():
+        return extracted_season, extracted_episode
+
+    # Trigger AI validation for uncertain cases
+    should_use_ai = (
+        extracted_episode is None or  # No episode found
+        len(series_name) < 3 or  # Series name too short
+        re.search(r'[Ee][Pp]s?\s*$', filename) or  # Ends with "EP" ambiguously
+        re.search(r'\(\d+\s*-\s*\d+\)', filename)  # Batch range without "EP"
+    )
+
+    if should_use_ai:
+        logger.debug(f"Using AI fallback for: {filename}")
+        return client.validate_episode_number(
+            filename=filename,
+            series_name=series_name,
+            extracted_season=extracted_season,
+            extracted_episode=extracted_episode,
+            context=context
+        )
+
+    return extracted_season, extracted_episode
 
 
 def extract_quality(filename: str) -> str:
@@ -1302,10 +1369,29 @@ def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[
 @click.option('--series', help='Filter by series name')
 @click.option('--season', type=int, help='Filter by season number')
 @click.option('--missing', is_flag=True, help='Show missing episodes')
+@click.option('--use-ai', is_flag=True, help='Use AI (OpenRouter) to validate uncertain episode numbers')
 @click.option('--completed-dir', default=DEFAULT_COMPLETED_DIR, help='Completed downloads folder')
 @click.pass_context
-def episodes(ctx, scan, import_db, fetch_metadata, match_series, match_all_series, finder, finder_all, auto_import, validate, cache_stats, cache_clear, cache_cleanup, dry_run, series_id, limit, series, season, missing, completed_dir):
+def episodes(ctx, scan, import_db, fetch_metadata, match_series, match_all_series, finder, finder_all, auto_import, validate, cache_stats, cache_clear, cache_cleanup, dry_run, series_id, limit, series, season, missing, use_ai, completed_dir):
     """Find and list episodes from completed downloads"""
+
+    # Default behavior: scan + use-ai + import-db when no action flags provided
+    action_flags = [scan, import_db, fetch_metadata, match_series, match_all_series,
+                    finder, finder_all, auto_import, validate, cache_stats, cache_clear, cache_cleanup]
+    if not any(action_flags):
+        scan = True
+        use_ai = True
+        import_db = True
+        logger.info("Default mode: scan + AI fallback + import to DB")
+
+    # AI validation check
+    if use_ai:
+        client = openrouter_client.get_client()
+        if client.is_available():
+            logger.info("AI episode validation enabled (OpenRouter)")
+        else:
+            logger.warning("AI validation requested but OpenRouter API key not set")
+            logger.info("Set OPENROUTER_API_KEY environment variable to enable AI validation")
 
     # Cache management
     if cache_stats:
@@ -1358,7 +1444,7 @@ def episodes(ctx, scan, import_db, fetch_metadata, match_series, match_all_serie
 
         # Step 1: Scan completed folder
         logger.info("\n[1/4] Scanning completed folder...")
-        eps = scan_completed_folder(completed_dir)
+        eps = scan_completed_folder(completed_dir, use_ai=use_ai)
         results['scanned'] = len(eps)
 
         if eps:
@@ -1605,7 +1691,7 @@ def episodes(ctx, scan, import_db, fetch_metadata, match_series, match_all_serie
     # Scan completed folder (needed for both --scan and --import-db)
     if scan or import_db:
         logger.info(f"Scanning completed folder: {completed_dir}")
-        eps = scan_completed_folder(completed_dir)
+        eps = scan_completed_folder(completed_dir, use_ai=use_ai)
 
         if not eps:
             logger.warning("No episodes found")
@@ -1644,7 +1730,8 @@ def episodes(ctx, scan, import_db, fetch_metadata, match_series, match_all_serie
                 s_num = ep['season']
                 e_num = ep['episode']
                 e_str = f"S{s_num:02d}E{e_num:02d}" if e_num else f"S{s_num:02d}"
-                click.echo(f"  {e_str} - {ep['quality']} - {ep['size_human']}")
+                size_str = format_size(ep.get('size_bytes', 0))
+                click.echo(f"  {e_str} - {ep['quality']} - {size_str}")
     else:
         # Query from database
         eps = get_episodes_from_db(series, season)

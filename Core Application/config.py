@@ -9,6 +9,35 @@ from pathlib import Path
 from copy import deepcopy
 
 
+def load_env_file(env_path='.env'):
+    """
+    Load environment variables from .env file
+
+    Args:
+        env_path: Path to .env file
+    """
+    env_file = Path(env_path)
+    if env_file.exists():
+        with open(env_file) as f:
+            for line in f:
+                line = line.strip()
+                # Skip comments and empty lines
+                if not line or line.startswith('#'):
+                    continue
+                # Parse KEY=VALUE format
+                if '=' in line:
+                    key, value = line.split('=', 1)
+                    key = key.strip()
+                    value = value.strip()
+                    # Only set if not already in environment
+                    if key and key not in os.environ:
+                        os.environ[key] = value
+
+
+# Load .env file on import
+load_env_file()
+
+
 # Get script directory for relative paths
 script_dir = Path(__file__).parent.parent
 
@@ -36,6 +65,11 @@ DEFAULT_CONFIG = {
         'quality_filter': True,
         'exclude_4k': True,
         'preferred_quality': '1080p'
+    },
+    'openrouter': {
+        'api_key': os.environ.get('OPENROUTER_API_KEY', ''),
+        'model': os.environ.get('OPENROUTER_MODEL', 'openai/gpt-5-nano'),
+        'timeout': 30
     },
     'output': {
         'json_file': str(script_dir / 'Data & Cache' / 'data' / 'webseries.json'),
