@@ -305,11 +305,13 @@ YOUR TASKS:
    - Thailand = Thai text/names
 7. Does title match '{expected_title}'?
 8. Is poster quality good?
+9. PROVIDE TMDB ID and IMDb ID if you know them for this series
 
 IMPORTANT:
 - Extract ACTUAL NAMES you see on poster
 - Look for non-Latin scripts to identify origin
 - Check if actor/director names sound Indian, Korean, Chinese, etc.
+- If you recognize this series, provide the TMDB and IMDb IDs
 
 Respond in JSON format:
 {{
@@ -322,6 +324,8 @@ Respond in JSON format:
   "matches_expected": true/false,
   "poster_quality": "good/bad",
   "confidence": "high/medium/low",
+  "tmdb_id": 123456 or null,
+  "imdb_id": "tt1234567" or null,
   "reasoning": "List all names you found and why you think it's from [country]"
 }}"""
 
@@ -338,8 +342,8 @@ Respond in JSON format:
                 }
             ],
             'temperature': 0.1,
-            'max_tokens': 1500,
-            'reasoning_effort': 'low'
+            'max_tokens': 3000,
+            'reasoning_effort': 'medium'
         }
 
         response = requests.post(
@@ -385,8 +389,18 @@ Respond in JSON format:
             if analysis.get('production_companies'):
                 print(f"  🏢 Production: {', '.join(analysis['production_companies'][:3])}")
 
+            # Show IDs if found by gpt-5-nano
+            if analysis.get('tmdb_id'):
+                print(f"  🎯 TMDB ID: {analysis['tmdb_id']}")
+            if analysis.get('imdb_id'):
+                print(f"  🎬 IMDb ID: {analysis['imdb_id']}")
+
             print(f"  🎯 Confidence: {analysis.get('confidence', 'unknown')}")
             print(f"  💭 Reasoning: {analysis.get('reasoning', 'none')[:100]}...\n")
+
+            # Log if IDs were found
+            if analysis.get('tmdb_id') or analysis.get('imdb_id'):
+                logger.info(f"✅ GPT-5-nano found IDs: TMDB={analysis.get('tmdb_id')}, IMDb={analysis.get('imdb_id')}")
 
             return analysis
 
@@ -740,11 +754,24 @@ def match_series_with_ai(series_id: int, dry_run: bool = False) -> bool:
             mark_series_failed(series_id)
             return False
 
-        # Step 2: Search TMDB with poster context
-        print("\n🔍 STEP 2: TMDB Search with Poster Context")
-        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        # Check if gpt-5-nano found IDs directly
+        tmdb_data = None
+        if poster_context.get('tmdb_id'):
+            logger.info(f"✅ GPT-5-nano found TMDB ID directly: {poster_context['tmdb_id']}")
+            tmdb_data = {
+                'id': poster_context['tmdb_id'],
+                'imdb_id': poster_context.get('imdb_id'),
+                'name': series_name,
+                'gpt_nano_match': True
+            }
+            print("\n✅ IDs found by GPT-5-nano - skipping TMDB search")
 
-        tmdb_data = search_tmdb_with_context(clean_name, year, poster_context)
+        # Step 2: Search TMDB with poster context (if no IDs from gpt-5-nano)
+        if not tmdb_data:
+            print("\n🔍 STEP 2: TMDB Search with Poster Context")
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+            tmdb_data = search_tmdb_with_context(clean_name, year, poster_context)
 
         if not tmdb_data:
             logger.warning("⚠️  No TMDB match found with gpt-5-nano")
