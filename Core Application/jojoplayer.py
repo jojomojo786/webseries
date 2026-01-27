@@ -28,7 +28,7 @@ requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
 # API configuration
 JOJOPLAYER_API_KEY = os.getenv('JOJOPLAYER_API_KEY', 'psFx3j6O3')
-JOJOPLAYER_DOMAIN = os.getenv('JOJOPLAYER_DOMAIN', 'https://jojo.ovoh/')
+JOJOPLAYER_DOMAIN = os.getenv('JOJOPLAYER_DOMAIN', 'https://jojo.ovh/')
 EMBEDOJO_API_BASE = 'https://embedojo.net/api'
 EMBEDOJO_MEMBER_ID = os.getenv('EMBEDOJO_MEMBER_ID', '254')
 
