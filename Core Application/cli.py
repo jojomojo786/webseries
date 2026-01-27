@@ -27,7 +27,14 @@ from logger import setup_logging
 @click.option('--dry-run', is_flag=True, help='Show what would be done without making changes')
 @click.pass_context
 def cli(ctx, config, debug, finder, finder_all, dry_run):
-    """Webseries scraper - Download and catalog web series torrents"""
+    """Webseries scraper - Download, process, and catalog web series torrents
+
+Features:
+    • Download torrents via qBittorrent
+    • Process MKV files with mkvmerge (keep only Tamil audio)
+    • Scan and import episodes to database
+    • Fetch metadata from TMDB
+    """
     # Load configuration
     ctx.ensure_object(dict)
     ctx.obj['config'] = load_config(config)
