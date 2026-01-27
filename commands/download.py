@@ -173,7 +173,7 @@ def update_torrent_status(torrent_id: int, status: int) -> bool:
 
     Args:
         torrent_id: ID of the torrent
-        status: 0 = failed/pending, 1 = success
+        status: 0 = failed/pending, 1 = downloading (added to qBittorrent), 2 = completed
 
     Returns:
         bool: True if successful
@@ -201,6 +201,7 @@ def update_torrent_status(torrent_id: int, status: int) -> bool:
 def move_completed_torrents(client, temp_dir=DEFAULT_TEMP_DIR, completed_dir=DEFAULT_COMPLETED_DIR):
     """
     Move completed torrents from temp to completed folder and remove them from qBittorrent
+    Auto-removes all completed torrents regardless of state (STOPPED, STOPPEDUP, etc.)
 
     Args:
         client: qBittorrent client
@@ -226,13 +227,20 @@ def move_completed_torrents(client, temp_dir=DEFAULT_TEMP_DIR, completed_dir=DEF
         torrents = client.torrents_info()
 
         for torrent in torrents:
-            # Check if torrent is completed (100% progress)
-            if torrent.get('progress') == 1.0:
-                save_path = torrent.get('save_path', '')
-                content_path = torrent.get('content_path', '')
-                magnet_uri = torrent.get('magnet_uri', '')
-                torrent_name = torrent.get('name', 'unknown')
-                torrent_hash = torrent.get('hash', '')
+            # Handle both dict and object access (qbittorrentapi returns dicts)
+            progress = torrent.get('progress', 0) if isinstance(torrent, dict) else getattr(torrent, 'progress', 0)
+            save_path = torrent.get('save_path', '') if isinstance(torrent, dict) else getattr(torrent, 'save_path', '')
+            content_path = torrent.get('content_path', '') if isinstance(torrent, dict) else getattr(torrent, 'content_path', '')
+            magnet_uri = torrent.get('magnet_uri', '') if isinstance(torrent, dict) else getattr(torrent, 'magnet_uri', '')
+            torrent_name = torrent.get('name', 'unknown') if isinstance(torrent, dict) else getattr(torrent, 'name', 'unknown')
+            torrent_hash = torrent.get('hash', '') if isinstance(torrent, dict) else getattr(torrent, 'hash', '')
+
+            # Check if torrent is completed (100% progress) - handle any state
+            if progress >= 1.0:
+                # ALWAYS update status to 2 when torrent completes downloading
+                if magnet_uri:
+                    update_torrent_status_by_magnet(magnet_uri, 2)
+                    logger.info(f"Updated status=2 (completed) for: {torrent_name}")
 
                 # Handle torrents in temp directory
                 if temp_dir in save_path:
@@ -261,26 +269,23 @@ def move_completed_torrents(client, temp_dir=DEFAULT_TEMP_DIR, completed_dir=DEF
                         else:
                             logger.debug(f"Source not found: {torrent_name}")
 
-                    # Update status and remove from qBittorrent
-                    if magnet_uri:
-                        update_torrent_status_by_magnet(magnet_uri, 1)
+                # Remove from qBittorrent (keep files!)
+                try:
+                    # delete_files=False keeps the downloaded files
+                    client.torrents_delete(delete_files=False, torrent_hashes=[torrent_hash])
+                    removed_count += 1
+                    logger.info(f"Removed from qBittorrent (files kept): {torrent_name}")
+                except Exception as e:
+                    logger.error(f"Failed to delete torrent from qBittorrent: {e}")
 
+            # Handle torrents that are seeding/completed in completed folder
+            # (files already moved but torrent still in qBittorrent)
+            # Note: Status already updated above for all completed torrents
                     try:
-                        client.torrents_delete(torrent_hashes=torrent_hash)
+                        # delete_files=False keeps the downloaded files
+                        client.torrents_delete(delete_files=False, torrent_hashes=[torrent_hash])
                         removed_count += 1
-                    except Exception as e:
-                        logger.error(f"Failed to delete torrent from qBittorrent: {e}")
-
-                # Handle torrents that are seeding/completed in completed folder
-                # (files already moved but torrent still in qBittorrent)
-                elif completed_dir in save_path:
-                    logger.info(f"Removing completed torrent from qBittorrent: {torrent_name}")
-                    # Update status if not already set
-                    if magnet_uri:
-                        update_torrent_status_by_magnet(magnet_uri, 1)
-                    try:
-                        client.torrents_delete(torrent_hashes=torrent_hash)
-                        removed_count += 1
+                        logger.info(f"Removed from qBittorrent (files kept): {torrent_name}")
                     except Exception as e:
                         logger.error(f"Failed to delete torrent from qBittorrent: {e}")
 
@@ -297,7 +302,7 @@ def update_torrent_status_by_magnet(magnet_link: str, status: int) -> bool:
 
     Args:
         magnet_link: Magnet link of the torrent
-        status: 0 = failed/pending, 1 = success
+        status: 0 = failed/pending, 1 = downloading (added to qBittorrent), 2 = completed
 
     Returns:
         bool: True if successful
@@ -358,6 +363,136 @@ def watch_and_move_completed(client, temp_dir=DEFAULT_TEMP_DIR, completed_dir=DE
         logger.info("Watch stopped by user")
 
 
+def check_torrent_status(host='localhost', port=8090, username=None, password=None):
+    """
+    Check completion status of torrents in qBittorrent vs database
+
+    Args:
+        host: qBittorrent host
+        port: qBittorrent port
+        username: qBittorrent username
+        password: qBittorrent password
+    """
+    import re
+
+    # Connect to qBittorrent
+    client = get_qbittorrent_client(host, port, username, password)
+    if not client:
+        return
+
+    # Get torrents from qBittorrent
+    torrents = client.torrents_info()
+
+    if not torrents:
+        click.echo("ℹ️  No torrents in qBittorrent")
+        return
+
+    # Get database connection
+    conn = get_connection()
+    if not conn:
+        logger.error("Failed to connect to database")
+        return
+
+    cursor = conn.cursor(dictionary=True)
+
+    click.echo("\n" + "=" * 100)
+    click.echo("📊 TORRENT STATUS: qBittorrent vs Database")
+    click.echo("=" * 100)
+
+    completed_count = 0
+    downloading_count = 0
+    stalled_count = 0
+
+    for t in torrents:
+        # Handle both dict and object access
+        progress = (t.get('progress', 0) if isinstance(t, dict) else getattr(t, 'progress', 0)) * 100
+        state = (t.get('state', '') if isinstance(t, dict) else getattr(t, 'state', '')).upper()
+        size_gb = (t.get('size', 0) if isinstance(t, dict) else getattr(t, 'size', 0)) / (1024**3)
+        magnet_uri = t.get('magnet_uri', '') if isinstance(t, dict) else (getattr(t, 'magnet_uri', '') if hasattr(t, 'magnet_uri') else '')
+        name = t.get('name', '') if isinstance(t, dict) else getattr(t, 'name', '')
+
+        # Extract info_hash from magnet URI
+        info_hash_match = re.search(r'xt=urn:btih:([a-fA-F0-9]{40})', magnet_uri)
+        info_hash = info_hash_match.group(1).lower() if info_hash_match else ''
+
+        # Find in database
+        cursor.execute('SELECT id, status, series_id FROM torrents WHERE link LIKE %s', (f'%{info_hash}%',))
+        db_record = cursor.fetchone()
+
+        if db_record:
+            db_status = db_record['status']
+            # Determine status text
+            if progress >= 100.0 or 'COMPLETED' in state or 'STOPPEDUP' in state:
+                qbit_status = "✅ COMPLETED"
+                status_icon = "✅"
+                completed_count += 1
+                expected_db_status = 2
+            elif 'DOWNLOADING' in state or 'METADL' in state:
+                qbit_status = "⬇️  DOWNLOADING"
+                status_icon = "⬇️"
+                downloading_count += 1
+                expected_db_status = 1
+            else:
+                qbit_status = f"⏸️  {state}"
+                status_icon = "⏸️"
+                stalled_count += 1
+                expected_db_status = 1
+
+            # Check if DB status matches
+            if db_status == expected_db_status:
+                match_status = "✓ Match"
+            elif db_status is None and expected_db_status == 1:
+                match_status = "⚠ Needs update (should be 1)"
+            elif progress >= 100.0 and db_status != 2:
+                match_status = f"⚠ Needs update (should be 2, is {db_status})"
+            else:
+                match_status = f"? DB={db_status}"
+
+            db_status_text = {
+                None: 'Pending',
+                0: 'Pending',
+                1: 'Downloading',
+                2: 'Completed'
+            }.get(db_status, f'Unknown({db_status})')
+
+            click.echo(f"{status_icon} {qbit_status:15s} | {progress:5.1f}% | {size_gb:5.2f} GB | DB: {db_status_text:12s} | {match_status}")
+            click.echo(f"   {name[:80]}")
+        else:
+            click.echo(f"❌ NOT IN DB | {progress:5.1f}% | {size_gb:5.2f} GB | {state:15s}")
+            click.echo(f"   {name[:80]}")
+
+    click.echo("\n" + "-" * 100)
+
+    # Summary
+    cursor.execute('''
+        SELECT
+          CASE COALESCE(status, 0)
+            WHEN 0 THEN 'Pending'
+            WHEN 1 THEN 'Downloading'
+            WHEN 2 THEN 'Completed'
+            ELSE 'Unknown'
+          END as status_text,
+          COUNT(*) as count
+        FROM torrents
+        GROUP BY status_text
+        ORDER BY status_text
+    ''')
+
+    click.echo("📈 DATABASE SUMMARY:")
+    for row in cursor.fetchall():
+        click.echo(f"   {row['status_text']:15s} : {row['count']} torrents")
+
+    click.echo(f"\n📈 QBITTORRENT SUMMARY:")
+    click.echo(f"   {'Completed':15s} : {completed_count} torrents")
+    click.echo(f"   {'Downloading':15s} : {downloading_count} torrents")
+    click.echo(f"   {'Other/Stalled':15s} : {stalled_count} torrents")
+
+    click.echo("=" * 100)
+
+    cursor.close()
+    conn.close()
+
+
 @click.command()
 @click.option('--host', default='localhost', help='qBittorrent Web UI host')
 @click.option('--port', default=8090, type=int, help='qBittorrent Web UI port')
@@ -374,11 +509,17 @@ def watch_and_move_completed(client, temp_dir=DEFAULT_TEMP_DIR, completed_dir=DE
 @click.option('--category', help='Torrent category in qBittorrent')
 @click.option('--no-auto-move', is_flag=True, help='Disable automatic move of completed torrents')
 @click.option('--dry-run', is_flag=True, help='Show what would be downloaded without actually downloading')
+@click.option('--check-status', 'check_status', is_flag=True, help='Check completion status of torrents in qBittorrent vs database')
 @click.pass_context
 def download(ctx, host, port, username, password, series_id, season_id, quality,
-             limit, max_active, save_path, temp_dir, completed_dir, category, no_auto_move, dry_run):
+             limit, max_active, save_path, temp_dir, completed_dir, category, no_auto_move, dry_run, check_status):
     """Download torrents from database using qBittorrent"""
     config = ctx.obj.get('config', {})
+
+    # Handle --check-status flag
+    if check_status:
+        check_torrent_status(host, port, username, password)
+        return
 
     # Use config values if not provided via CLI
     qb_config = config.get('qbittorrent', {})
@@ -465,6 +606,10 @@ def download(ctx, host, port, username, password, series_id, season_id, quality,
             )
             logger.info(f"Added: {name[:60]}... ({t['quality']})")
             success_count += 1
+
+            # Set status=1 when torrent is added to qBittorrent
+            update_torrent_status(t['id'], 1)
+            logger.debug(f"Updated status=1 (added to qBittorrent) for: {name}")
 
             # Small delay to let qBittorrent register the new torrent
             time.sleep(0.1)
