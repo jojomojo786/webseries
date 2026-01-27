@@ -72,6 +72,7 @@ def cli(ctx, config, debug, finder, finder_all, dry_run):
 from commands.run import run
 from commands.db import db_group
 from commands.download import download, move_completed
+from commands.process import process, process_watch
 from episodes import episodes
 
 # Register commands
@@ -79,6 +80,8 @@ cli.add_command(run)
 cli.add_command(db_group)
 cli.add_command(download)
 cli.add_command(move_completed)
+cli.add_command(process)
+cli.add_command(process_watch)
 cli.add_command(episodes)
 
 

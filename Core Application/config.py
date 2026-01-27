@@ -81,6 +81,14 @@ DEFAULT_CONFIG = {
         'max_bytes': 10485760,  # 10MB
         'backup_count': 5,
         'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    },
+    'video_processing': {
+        'mkvmerge_path': '/usr/bin/mkvmerge',
+        'completed_dir': str(script_dir / 'Data & Cache' / 'downloads' / 'completed'),
+        'processing_dir': str(script_dir / 'Data & Cache' / 'downloads' / 'processing'),
+        'processed_dir': str(script_dir / 'Data & Cache' / 'downloads' / 'processed'),
+        'watch_interval': 30,
+        'timeout': 600
     }
 }
 
