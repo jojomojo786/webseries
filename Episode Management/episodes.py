@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Episodes command - Find and list episodes from completed downloads
+Episodes command - Find and list episodes from processed downloads
 
 Usage:
     python3 cli.py episodes                    # List all episodes
@@ -35,20 +35,20 @@ TMDB_API_KEY = os.environ.get('TMDB_API_KEY', '')
 # OpenRouter API key for AI episode validation
 OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY', '')
 
-# Default completed folder (relative to new directory structure)
+# Default processed folder (relative to new directory structure)
 script_dir = Path(__file__).parent.parent
-DEFAULT_COMPLETED_DIR = str(script_dir / 'Data & Cache' / 'downloads' / 'completed')
+DEFAULT_PROCESSED_DIR = str(script_dir / 'Data & Cache' / 'downloads' / 'processed')
 
 # Video file extensions
 VIDEO_EXTENSIONS = {'.mkv', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v'}
 
 
-def scan_completed_folder(completed_dir: str = DEFAULT_COMPLETED_DIR, use_ai: bool = False) -> list[dict]:
+def scan_processed_folder(processed_dir: str = DEFAULT_PROCESSED_DIR, use_ai: bool = False) -> list[dict]:
     """
-    Scan completed folder for video files and extract episode info
+    Scan processed folder for video files and extract episode info
 
     Args:
-        completed_dir: Path to completed downloads folder
+        processed_dir: Path to processed downloads folder
         use_ai: Use AI fallback for uncertain episode numbers
 
     Returns:
@@ -56,16 +56,16 @@ def scan_completed_folder(completed_dir: str = DEFAULT_COMPLETED_DIR, use_ai: bo
     """
     episodes = []
 
-    if not os.path.exists(completed_dir):
-        logger.warning(f"Completed folder not found: {completed_dir}")
+    if not os.path.exists(processed_dir):
+        logger.warning(f"Processed folder not found: {processed_dir}")
         return episodes
 
-    for root, dirs, files in os.walk(completed_dir):
+    for root, dirs, files in os.walk(processed_dir):
         for file in files:
             if Path(file).suffix.lower() in VIDEO_EXTENSIONS:
                 filepath = os.path.join(root, file)
                 filename = os.path.basename(filepath)
-                rel_path = os.path.relpath(filepath, completed_dir)
+                rel_path = os.path.relpath(filepath, processed_dir)
 
                 # Extract series name and episode info
                 series_name = extract_series_name(filename)
@@ -1086,7 +1086,7 @@ def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[
     Import scanned episodes into the database
 
     Args:
-        episodes: List of episode dicts from scan_completed_folder
+        episodes: List of episode dicts from scan_processed_folder
         dry_run: If True, don't actually insert into database
 
     Returns:
@@ -1351,7 +1351,7 @@ def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[
 
 
 @click.command()
-@click.option('--scan', is_flag=True, help='Scan completed folder for episodes')
+@click.option('--scan', is_flag=True, help='Scan processed folder for episodes')
 @click.option('--import-db', is_flag=True, help='Import scanned episodes into database')
 @click.option('--fetch-metadata', is_flag=True, help='Fetch episode metadata from TMDB')
 @click.option('--match-series', type=int, help='Match a series from DB to TMDB by series ID')
@@ -1370,10 +1370,10 @@ def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[
 @click.option('--season', type=int, help='Filter by season number')
 @click.option('--missing', is_flag=True, help='Show missing episodes')
 @click.option('--use-ai', is_flag=True, help='Use AI (OpenRouter) to validate uncertain episode numbers')
-@click.option('--completed-dir', default=DEFAULT_COMPLETED_DIR, help='Completed downloads folder')
+@click.option('--processed-dir', default=DEFAULT_PROCESSED_DIR, help='Processed downloads folder')
 @click.pass_context
-def episodes(ctx, scan, import_db, fetch_metadata, match_series, match_all_series, finder, finder_all, auto_import, validate, cache_stats, cache_clear, cache_cleanup, dry_run, series_id, limit, series, season, missing, use_ai, completed_dir):
-    """Find and list episodes from completed downloads"""
+def episodes(ctx, scan, import_db, fetch_metadata, match_series, match_all_series, finder, finder_all, auto_import, validate, cache_stats, cache_clear, cache_cleanup, dry_run, series_id, limit, series, season, missing, use_ai, processed_dir):
+    """Find and list episodes from processed downloads"""
 
     # Default behavior: scan + use-ai + import-db when no action flags provided
     action_flags = [scan, import_db, fetch_metadata, match_series, match_all_series,
@@ -1442,9 +1442,9 @@ def episodes(ctx, scan, import_db, fetch_metadata, match_series, match_all_serie
             'metadata_fetched': 0,
         }
 
-        # Step 1: Scan completed folder
-        logger.info("\n[1/4] Scanning completed folder...")
-        eps = scan_completed_folder(completed_dir, use_ai=use_ai)
+        # Step 1: Scan processed folder
+        logger.info("\n[1/4] Scanning processed folder...")
+        eps = scan_processed_folder(processed_dir, use_ai=use_ai)
         results['scanned'] = len(eps)
 
         if eps:
@@ -1688,10 +1688,10 @@ def episodes(ctx, scan, import_db, fetch_metadata, match_series, match_all_serie
                 logger.info("DRY RUN - No changes were made")
         return
 
-    # Scan completed folder (needed for both --scan and --import-db)
+    # Scan processed folder (needed for both --scan and --import-db)
     if scan or import_db:
-        logger.info(f"Scanning completed folder: {completed_dir}")
-        eps = scan_completed_folder(completed_dir, use_ai=use_ai)
+        logger.info(f"Scanning processed folder: {processed_dir}")
+        eps = scan_processed_folder(processed_dir, use_ai=use_ai)
 
         if not eps:
             logger.warning("No episodes found")
@@ -1738,7 +1738,7 @@ def episodes(ctx, scan, import_db, fetch_metadata, match_series, match_all_serie
 
         if not eps:
             logger.warning("No episodes found in database")
-            logger.info("Use --scan to scan completed folder")
+            logger.info("Use --scan to scan processed folder")
             return
 
         # Group by series

@@ -10,12 +10,13 @@ A Python scraper for extracting web series titles and torrent links from the 1Ta
 - MySQL/MariaDB database
 - pip (Python package manager)
 - qBittorrent with Web UI enabled (for download feature)
+- mkvmerge (MKVToolNix) for video processing
 - TMDB API Key (for metadata fetching)
-- OpenRouter API Key (for AI-powered series matching)
+- OpenRouter API Key (for AI-powered series matching and episode validation)
 
 ## Features
 
-- **Unified CLI**: Single command with subcommands for scraping, database management, and downloads
+- **Unified CLI**: Single command with subcommands for scraping, database management, downloads, and video processing
 - **Colored Logging**: Console and file logging with automatic rotation (10MB)
 - **Configuration**: YAML-based config with environment variable support
 - **Database Storage**: MySQL integration with normalized schema (series → seasons → torrents)
@@ -23,8 +24,9 @@ A Python scraper for extracting web series titles and torrent links from the 1Ta
 - **Smart Parsing**: Extracts seasons, episodes, file sizes, and quality from torrent names
 - **Database Tools**: Integrity checks, orphan fixing, statistics, and data clearing
 - **qBittorrent Integration**: Download torrents directly to temp/completed folders
-- **AI-Powered Series Matching**: Find tmdb_id and imdb_id using poster analysis with GPT-5 Nano Vision
-- **Episode Management**: Import, scan, and fetch episode metadata from TMDB
+- **AI-Powered Series Matching**: Find tmdb_id and imdb_id using poster analysis with GPT-5.2/GPT-5 Nano Vision
+- **Episode Management**: Import, scan, validate with AI, and fetch episode metadata from TMDB
+- **Video Processing**: Process MKV files to keep only Tamil audio tracks using mkvmerge
 - **Backward Compatible**: Legacy `scraper.py` still works with argparse
 
 ## Installation
@@ -81,6 +83,7 @@ The `scraper` command provides a unified interface to all functionality:
 ./scraper run                 # Run scraper
 ./scraper db stats            # Show statistics
 ./scraper db check            # Verify integrity
+./scraper process --all       # Process all videos (Tamil audio only)
 ./scraper --debug run --pages 1  # Debug mode
 
 # Scraper options
@@ -95,6 +98,13 @@ The `scraper` command provides a unified interface to all functionality:
 ./scraper db check         # Verify database integrity
 ./scraper db fix-orphans   # Fix orphaned torrent records
 ./scraper db clear         # Clear all data (with confirmation)
+
+# Video processing commands
+./scraper process --file /path/to/file.mkv   # Process single file
+./scraper process --series "Series Name"     # Process specific series
+./scraper process --all                      # Process all series
+./scraper process --watch                    # Watch mode for new files
+./scraper process --dry-run                  # Preview changes
 ```
 
 ### Downloading Torrents
@@ -135,9 +145,11 @@ python3 cli.py --finder-all --dry-run
 
 **How it works:**
 1. Downloads poster from `poster_url` column
-2. Analyzes poster with AI vision (GPT-5 Nano)
-3. Searches TMDB with cleaned series name
-4. Fetches `imdb_id` from TMDB external_ids endpoint
+2. **Primary**: Analyzes poster with GPT-5 Nano (3000 tokens, high reasoning effort)
+   - Attempts to extract TMDB/IMDb IDs directly from the poster
+   - If IDs found, updates database immediately
+3. **Fallback**: If primary fails, uses GPT-5.2 for complex analysis
+4. **Legacy**: Falls back to TMDB search if AI ID extraction fails
 5. Updates database: `tmdb_id`, `imdb_id`, `gpt=1`
 
 **Database columns updated:**
@@ -147,9 +159,12 @@ python3 cli.py --finder-all --dry-run
 
 ### Episode Management
 
-Manage completed episodes and fetch metadata from TMDB:
+Manage completed episodes with AI-powered validation and metadata fetching from TMDB:
 
 ```bash
+# Default: Scan → AI Fallback (for ambiguous files) → Import to DB
+python3 cli.py episodes
+
 # Scan completed folder for episodes
 python3 cli.py episodes --scan
 
@@ -176,6 +191,46 @@ python3 cli.py episodes --cache-stats
 python3 cli.py episodes --cache-clear
 python3 cli.py episodes --cache-cleanup
 ```
+
+**AI Episode Validation:**
+The default `episodes` command now includes AI fallback for:
+- Filenames without clear episode numbers
+- Short series names with ambiguous patterns
+- Batch range episodes (EP01-EP10)
+- Uses OpenRouter GPT-5 Nano with 10000 max tokens for reasoning
+
+### Video Processing with mkvmerge
+
+Process downloaded MKV files to keep only Tamil audio tracks:
+
+```bash
+# Process a single file
+python3 cli.py process --file /path/to/file.mkv
+
+# Process a specific series folder
+python3 cli.py process --series "Series Name"
+
+# Process all downloaded series
+python3 cli.py process --all
+
+# Watch mode - continuously process new files
+python3 cli.py process --watch --interval 30
+
+# Dry run to preview changes
+python3 cli.py process --dry-run --all
+```
+
+**How it works:**
+1. Scans for MKV files in the completed directory
+2. Uses mkvmerge to identify and keep only Tamil audio tracks
+3. Detects Tamil by language code (tam/ta) or track name analysis
+4. Falls back to first audio track if no language metadata exists
+5. Preserves folder structure and removes empty folders
+6. Creates processed copies with `_TamilOnly` suffix
+
+**Requirements:**
+- mkvmerge (part of MKVToolNix)
+- Install via: `sudo apt install mkvtoolnix` (Debian/Ubuntu)
 
 ### Download Workflow Diagram
 
