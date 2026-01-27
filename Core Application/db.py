@@ -130,6 +130,17 @@ def format_size(size_bytes: int) -> str:
     return f"{size_bytes} B"
 
 
+def extract_info_hash_from_magnet(magnet_link: str) -> str | None:
+    """
+    Extract info_hash from magnet link
+    Format: magnet:?xt=urn:btih:<hash>&...
+    """
+    match = re.search(r'btih:([a-fA-F0-9]{40})', magnet_link)
+    if match:
+        return match.group(1).lower()
+    return None
+
+
 def extract_episode_count_from_torrents(torrents: list[dict]) -> int:
     """Calculate actual episode count from torrent names"""
     if not torrents:
@@ -185,7 +196,7 @@ def save_to_database(data: list[dict]) -> tuple[int, int, int]:
         for item in data:
             # Extract metadata
             year = extract_year_from_title(item.get('title', ''))
-            season_number = extract_season_from_title(item.get('title', ''))
+            season_number = extract_season_from_title(item.get('title', '')) or 1
             torrents = item.get('torrents', [])
 
             # Calculate episode count from torrent names
@@ -259,11 +270,31 @@ def save_to_database(data: list[dict]) -> tuple[int, int, int]:
                     season_id = result[0] if result else None
 
                 if season_id and torrents:
-                    # Step 3: Delete existing torrents for this season
-                    cursor.execute('DELETE FROM torrents WHERE season_id = %s', (season_id,))
+                    # Step 3: Get existing torrents for deduplication
+                    cursor.execute('SELECT id, link FROM torrents WHERE season_id = %s', (season_id,))
+                    existing_torrents = {row[1]: row[0] for row in cursor.fetchall()}
 
-                    # Step 4: Insert torrents linked to season
+                    # Step 4: Insert only new torrents
                     for torrent in torrents:
+                        link = torrent.get('link', '')
+                        torrent_type = torrent.get('type', 'magnet')
+
+                        # For magnet links, extract info_hash for deduplication
+                        if torrent_type == 'magnet':
+                            info_hash = extract_info_hash_from_magnet(link)
+                            if info_hash:
+                                # Check if any existing torrent has this info_hash
+                                cursor.execute('''
+                                    SELECT id, link FROM torrents WHERE season_id = %s AND link LIKE %s
+                                ''', (season_id, f'%btih:{info_hash}%'))
+                                existing = cursor.fetchone()
+                                if existing:
+                                    continue  # Skip duplicate
+                            elif link in existing_torrents:
+                                continue  # Skip duplicate by exact link match
+                        elif link in existing_torrents:
+                            continue  # Skip duplicate for .torrent files
+
                         # Determine quality from name
                         name_lower = torrent.get('name', '').lower()
                         if '2160p' in name_lower or '4k' in name_lower:
@@ -285,9 +316,9 @@ def save_to_database(data: list[dict]) -> tuple[int, int, int]:
                         ''', (
                             series_id,
                             season_id,
-                            torrent.get('type', 'magnet'),
+                            torrent_type,
                             torrent.get('name', ''),
-                            torrent.get('link', ''),
+                            link,
                             torrent.get('size_human', 'unknown'),
                             torrent_quality
                         ))

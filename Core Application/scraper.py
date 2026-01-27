@@ -23,7 +23,13 @@ from urllib.parse import urljoin
 from logger import get_logger
 
 BASE_URL = "https://www.1tamilmv.rsvp"
-FORUM_URL = f"{BASE_URL}/index.php?/forums/forum/19-web-series-tv-shows/&sortby=start_date&sortdirection=desc"
+
+def get_forum_url(sort_by: str = "start_date") -> str:
+    """Get forum URL with specified sort order.
+    Args:
+        sort_by: 'start_date' (newly created topics) or 'last_post' (recently updated topics)
+    """
+    return f"{BASE_URL}/index.php?/forums/forum/19-web-series-tv-shows/&sortby={sort_by}&sortdirection=desc"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -364,7 +370,7 @@ def get_total_pages(soup: BeautifulSoup) -> int:
     return 1
 
 
-def scrape_forum(max_pages: int = None, include_torrents: bool = True, highest_quality: bool = False) -> list[dict]:
+def scrape_forum(max_pages: int = None, include_torrents: bool = True, highest_quality: bool = False, sort_by: str = "last_post") -> list[dict]:
     """
     Scrape the forum for all web series topics
 
@@ -372,6 +378,7 @@ def scrape_forum(max_pages: int = None, include_torrents: bool = True, highest_q
         max_pages: Maximum number of pages to scrape (None for all)
         include_torrents: Whether to also scrape torrent links from each topic
         highest_quality: If True, only keep the largest (highest quality) torrent per topic
+        sort_by: 'start_date' (newly created topics) or 'last_post' (recently updated topics)
 
     Returns:
         List of scraped items with title, url, and optionally torrents
@@ -379,9 +386,12 @@ def scrape_forum(max_pages: int = None, include_torrents: bool = True, highest_q
     logger.info("Starting scrape of 1TamilMV Web Series forum...")
     if highest_quality:
         logger.info("  Mode: Best quality (1080p preferred, 4K excluded)")
+    logger.info(f"  Sort by: {sort_by}")
+
+    forum_url = get_forum_url(sort_by)
 
     # Get first page to determine total pages
-    soup = get_page(FORUM_URL)
+    soup = get_page(forum_url)
     if not soup:
         logger.error("Failed to fetch forum page")
         return []
@@ -394,10 +404,10 @@ def scrape_forum(max_pages: int = None, include_torrents: bool = True, highest_q
 
     for page_num in range(1, pages_to_scrape + 1):
         if page_num == 1:
-            page_url = FORUM_URL
+            page_url = forum_url
             page_soup = soup  # Reuse first page
         else:
-            page_url = f"{BASE_URL}/index.php?/forums/forum/19-web-series-tv-shows/page/{page_num}/&sortby=start_date&sortdirection=desc"
+            page_url = f"{BASE_URL}/index.php?/forums/forum/19-web-series-tv-shows/page/{page_num}/&sortby={sort_by}&sortdirection=desc"
             page_soup = get_page(page_url)
             if not page_soup:
                 logger.warning(f"Failed to fetch page {page_num}, skipping...")
