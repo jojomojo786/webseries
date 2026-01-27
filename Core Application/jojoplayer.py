@@ -153,7 +153,7 @@ def fetch_episodes_for_jojoplayer(limit: int = 10) -> list[dict]:
             FROM episodes e
             JOIN seasons sea ON e.season_id = sea.id
             JOIN series s ON sea.series_id = s.id
-            WHERE e.jojoplayer_fetched = 0
+            WHERE e.jojoplayer IS NULL
             AND e.file_path IS NOT NULL
             AND e.status = 1
             ORDER BY e.id DESC
@@ -193,7 +193,6 @@ def update_episode_jojoplayer(episode_id: int, streaming_url: str) -> bool:
         query = '''
             UPDATE episodes
             SET jojoplayer = %s,
-                jojoplayer_fetched = 1,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
         '''
