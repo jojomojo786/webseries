@@ -52,8 +52,21 @@ def get_page(url: str, retries: int = 3) -> BeautifulSoup | None:
     return None
 
 
+def extract_forum_date_from_row(topic_link) -> str | None:
+    """Extract forum post date from the topic's row on the forum listing page"""
+    # The <time> element is in the same row as the topic link
+    # Navigate up to find the containing row, then find the time element
+    row = topic_link.find_parent("div", class_="ipsDataItem_main")
+    if row:
+        # Look for the <time> element with datetime attribute
+        time_elem = row.find("time", attrs={"datetime": True})
+        if time_elem and time_elem.get("datetime"):
+            return time_elem.get("datetime")
+    return None
+
+
 def extract_topics_from_page(soup: BeautifulSoup) -> list[dict]:
-    """Extract topic titles and URLs from a forum page"""
+    """Extract topic titles, URLs, and forum dates from a forum page"""
     topics = []
     seen_urls = set()
 
@@ -120,9 +133,12 @@ def extract_topics_from_page(soup: BeautifulSoup) -> list[dict]:
             seen_urls.add(normalized_url)
             # Clean the title
             title = re.sub(r'\s+', ' ', title).strip()
+            # Extract forum date from the same row
+            forum_date = extract_forum_date_from_row(link)
             topics.append({
                 "title": title,
-                "url": full_url
+                "url": full_url,
+                "forum_date": forum_date
             })
 
     return topics
@@ -395,6 +411,7 @@ def scrape_forum(max_pages: int = None, include_torrents: bool = True, highest_q
             item = {
                 "title": topic["title"],
                 "url": topic["url"],
+                "forum_date": topic.get("forum_date"),
                 "scraped_at": datetime.now().isoformat()
             }
 

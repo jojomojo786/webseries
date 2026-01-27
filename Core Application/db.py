@@ -194,18 +194,28 @@ def save_to_database(data: list[dict]) -> tuple[int, int, int]:
             total_size_human = format_size(total_size_bytes) if total_size_bytes > 0 else None
             quality = get_best_quality(torrents)
 
+            # Parse forum_date from ISO format if available
+            forum_date = None
+            if item.get('forum_date'):
+                try:
+                    forum_date = datetime.fromisoformat(item['forum_date'].replace('Z', '+00:00'))
+                except ValueError:
+                    pass  # Invalid date format, leave as None
+
             # Step 1: Insert or update series (base info only)
             cursor.execute('''
-                INSERT INTO series (title, url, poster_url, created_at)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO series (title, url, poster_url, forum_date, created_at)
+                VALUES (%s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     title = VALUES(title),
                     poster_url = COALESCE(VALUES(poster_url), poster_url),
+                    forum_date = COALESCE(VALUES(forum_date), forum_date),
                     created_at = VALUES(created_at)
             ''', (
                 item['title'],
                 item['url'],
                 item.get('poster_url'),
+                forum_date,
                 datetime.fromisoformat(item['scraped_at']) if item.get('scraped_at') else datetime.now()
             ))
 
