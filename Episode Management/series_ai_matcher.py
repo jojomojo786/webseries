@@ -50,6 +50,125 @@ POSTER_CACHE_DIR = '/tmp/series_ai_posters'
 Path(POSTER_CACHE_DIR).mkdir(parents=True, exist_ok=True)
 
 
+def find_ids_with_gpt52(poster_path: str, series_name: str) -> Optional[Dict]:
+    """
+    Fallback: Use GPT-5.2 to directly find TMDB/IMDb IDs from poster
+
+    Args:
+        poster_path: Path to poster image
+        series_name: Series name for context
+
+    Returns:
+        Dict with tmdb_id and/or imdb_id if found, None otherwise
+    """
+    if not os.path.exists(poster_path):
+        return None
+
+    logger.info("🔄 Fallback: Using GPT-5.2 to find TMDB/IMDb IDs...")
+
+    # Read and encode poster
+    with open(poster_path, 'rb') as f:
+        image_data = f.read()
+
+    base64_image = base64.b64encode(image_data).decode('utf-8')
+
+    # Detect mime type
+    if poster_path.lower().endswith('.png'):
+        mime_type = 'image/png'
+    else:
+        mime_type = 'image/jpeg'
+
+    data_url = f"data:{mime_type};base64,{base64_image}"
+
+    prompt = f"""Analyze this TV series poster and identify the show.
+
+Series name hint: {series_name}
+
+Your task:
+1. Read any text visible on the poster (title, actors, network)
+2. Identify the TV series
+3. Based on your knowledge, provide the TMDB ID and IMDb ID
+
+You MUST provide your best estimate for the IDs based on the series name.
+Common Indian streaming series are on TMDB. Search your knowledge for the IDs.
+
+Return ONLY valid JSON:
+{{
+    "series_name": "Official series name",
+    "tmdb_id": 295241,
+    "imdb_id": "tt37356230",
+    "confidence": "high/medium/low",
+    "reasoning": "Brief explanation"
+}}"""
+
+    try:
+        payload = {
+            'model': 'openai/gpt-5.2',
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': [
+                        {'type': 'text', 'text': prompt},
+                        {'type': 'image_url', 'image_url': {'url': data_url}}
+                    ]
+                }
+            ],
+            'temperature': 0.1,
+            'max_tokens': 2000
+        }
+
+        response = requests.post(
+            'https://openrouter.ai/api/v1/chat/completions',
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {OPENROUTER_API_KEY}'
+            },
+            json=payload,
+            timeout=60
+        )
+
+        response.raise_for_status()
+        result = response.json()
+
+        if 'choices' not in result or not result['choices']:
+            return None
+
+        message = result['choices'][0]['message']
+        content = message.get('content', '').strip()
+
+        # For reasoning models, check reasoning field if content is empty
+        if not content and message.get('reasoning'):
+            content = message.get('reasoning', '')
+
+        logger.debug(f"GPT-5.2 response: {content[:500]}")
+
+        # Extract JSON from response
+        json_match = re.search(r'\{[^{}]*"tmdb_id"[^{}]*\}', content, re.DOTALL)
+        if not json_match:
+            json_match = re.search(r'\{[^{}]*"series_name"[^{}]*\}', content, re.DOTALL)
+        if json_match:
+            data = json.loads(json_match.group())
+
+            tmdb_id = data.get('tmdb_id')
+            imdb_id = data.get('imdb_id')
+            confidence = data.get('confidence', 'low')
+
+            if tmdb_id or imdb_id:
+                logger.info(f"✅ GPT-5.2 found: TMDB={tmdb_id}, IMDb={imdb_id} (confidence: {confidence})")
+                return {
+                    'id': tmdb_id,
+                    'imdb_id': imdb_id,
+                    'name': data.get('series_name'),
+                    'gpt52_match': True
+                }
+
+        return None
+
+    except Exception as e:
+        logger.error(f"GPT-5.2 fallback error: {e}")
+        return None
+
+
 def clean_series_name(title: str) -> str:
     """
     Extract clean series name from release title
@@ -628,9 +747,18 @@ def match_series_with_ai(series_id: int, dry_run: bool = False) -> bool:
         tmdb_data = search_tmdb_with_context(clean_name, year, poster_context)
 
         if not tmdb_data:
-            logger.warning("⚠️  No TMDB match found")
-            mark_series_failed(series_id)
-            return False
+            logger.warning("⚠️  No TMDB match found with gpt-5-nano")
+
+            # Fallback: Try GPT-5.2 for direct ID lookup
+            print("\n🔍 STEP 2b: Fallback - GPT-5.2 Direct ID Lookup")
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+            tmdb_data = find_ids_with_gpt52(cache_path, series_name)
+
+            if not tmdb_data:
+                logger.warning("⚠️  GPT-5.2 fallback also failed")
+                mark_series_failed(series_id)
+                return False
 
         # Step 3: Update database
         print("\n🔍 STEP 3: Update Database")
