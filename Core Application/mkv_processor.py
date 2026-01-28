@@ -7,13 +7,25 @@ import re
 import shutil
 import subprocess
 import time
+import json
+import requests
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 from logger import get_logger
 
+# Load environment variables
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 logger = get_logger(__name__)
+
+# OpenRouter API for AI detection
+OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY', '')
 
 
 # Tamil language detection patterns
@@ -185,12 +197,13 @@ class MKVProcessor:
             logger.error(f"Error identifying tracks: {e}")
             return []
 
-    def find_tamil_tracks(self, audio_tracks: list[AudioTrack]) -> list[int]:
+    def find_tamil_tracks(self, audio_tracks: list[AudioTrack], mkv_path: str = '') -> list[int]:
         """
         Find Tamil audio tracks by language code or track name
 
         Args:
             audio_tracks: List of AudioTrack objects
+            mkv_path: Path to MKV file (used for AI detection context)
 
         Returns:
             List of track IDs to keep (all tracks if no Tamil detected)
@@ -212,13 +225,135 @@ class MKVProcessor:
                     logger.debug(f"Found Tamil track by name: {track}")
                     continue
 
-        # If no Tamil tracks found, keep ALL audio tracks (safer than guessing)
+        # If no Tamil tracks found, try AI detection
         if not tamil_tracks and audio_tracks:
+            ai_detected = self.detect_tamil_with_ai(audio_tracks, mkv_path)
+            if ai_detected:
+                return ai_detected
+
+            # If AI also failed, keep ALL audio tracks (safer than guessing)
             all_track_ids = [t.track_id for t in audio_tracks]
-            logger.info(f"No Tamil tracks identified - keeping all {len(all_track_ids)} audio tracks")
+            logger.info(f"No Tamil tracks identified by metadata or AI - keeping all {len(all_track_ids)} audio tracks")
             return all_track_ids
 
         return tamil_tracks
+
+    def detect_tamil_with_ai(self, audio_tracks: List[AudioTrack], mkv_path: str) -> Optional[List[int]]:
+        """
+        Use AI to detect Tamil audio track from context clues
+
+        Looks at folder name and file name for language order patterns like:
+        - [Tam + Tel + Hin + Mal] → Track 1 is Tamil
+        - [Hin + Tam + Tel] → Track 2 is Tamil
+        - www.1TamilMV.tf → Tamil is likely track 1
+
+        Args:
+            audio_tracks: List of AudioTrack objects
+            mkv_path: Path to MKV file (used to extract folder/file context)
+
+        Returns:
+            List of Tamil track IDs, or None if AI detection fails
+        """
+        if not OPENROUTER_API_KEY:
+            logger.debug("OpenRouter API key not set - skipping AI detection")
+            return None
+
+        # Extract context from path
+        folder_name = os.path.basename(os.path.dirname(mkv_path))
+        file_name = os.path.basename(mkv_path)
+
+        # Build tracks summary for AI
+        tracks_summary = "\n".join([
+            f"Track {t.track_id}: {t.codec} (language={t.language_code or 'unknown'}, name={t.track_name or 'none'})"
+            for t in audio_tracks
+        ])
+
+        prompt = f"""You are analyzing an MKV video file to identify which audio track is Tamil.
+
+CONTEXT:
+- Folder name: {folder_name}
+- File name: {file_name}
+- Number of audio tracks: {len(audio_tracks)}
+
+AUDIO TRACKS:
+{tracks_summary}
+
+INSTRUCTIONS:
+1. Look at the folder/file name for language order patterns like:
+   - [Tam + Tel + Hin + Mal] means Track 1=Tamil, Track 2=Telugu, Track 3=Hindi, Track 4=Malayalam
+   - [Hin + Tam + Tel] means Track 1=Hindi, Track 2=Tamil, Track 3=Telugu
+   - www.1TamilMV.tf releases typically have Tamil as the FIRST track
+
+2. Based on these patterns, identify which track ID is Tamil
+
+3. If you cannot determine with confidence, return null
+
+Respond ONLY with valid JSON:
+{{
+    "tamil_track_id": 1 or null,
+    "reasoning": "Brief explanation of your choice",
+    "confidence": "high/medium/low"
+}}"""
+
+        try:
+            logger.info("🤖 Using AI to detect Tamil audio track...")
+            payload = {
+                'model': 'openai/gpt-5-nano',
+                'messages': [
+                    {'role': 'user', 'content': prompt}
+                ],
+                'temperature': 0.1,
+                'max_tokens': 500
+            }
+
+            response = requests.post(
+                'https://openrouter.ai/api/v1/chat/completions',
+                headers={
+                    'Content-Type': 'application/json',
+                    'Authorization': f'Bearer {OPENROUTER_API_KEY}'
+                },
+                json=payload,
+                timeout=30
+            )
+
+            response.raise_for_status()
+            result = response.json()
+
+            logger.debug(f"AI API full response: {json.dumps(result, indent=2)[:1000]}")
+
+            if 'choices' not in result or not result['choices']:
+                logger.warning("AI returned invalid response structure")
+                return None
+
+            content = result['choices'][0]['message']['content'].strip()
+            logger.debug(f"AI raw response: {content[:500]}")
+
+            # Extract JSON from response
+            json_match = re.search(r'\{[^{}]*"tamil_track_id"[^{}]*\}', content, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+                tamil_track_id = data.get('tamil_track_id')
+                confidence = data.get('confidence', 'low')
+                reasoning = data.get('reasoning', '')
+
+                if tamil_track_id and isinstance(tamil_track_id, int):
+                    # Verify the track exists
+                    if any(t.track_id == tamil_track_id for t in audio_tracks):
+                        logger.info(f"✅ AI detected Tamil track: {tamil_track_id} (confidence: {confidence})")
+                        logger.debug(f"AI reasoning: {reasoning}")
+                        return [tamil_track_id]
+                    else:
+                        logger.warning(f"AI suggested track {tamil_track_id} but it doesn't exist")
+
+            logger.debug(f"AI could not identify Tamil track. Response: {content[:200]}")
+            return None
+
+        except requests.exceptions.Timeout:
+            logger.warning("AI request timeout - skipping AI detection")
+            return None
+        except Exception as e:
+            logger.warning(f"AI detection failed: {e}")
+            return None
 
     def build_mkvmerge_command(self, input_path: str, output_path: str,
                                tamil_track_ids: list[int]) -> list[str]:
@@ -348,7 +483,7 @@ class MKVProcessor:
                 )
 
             # Step 2: Find Tamil tracks
-            tamil_track_ids = self.find_tamil_tracks(audio_tracks)
+            tamil_track_ids = self.find_tamil_tracks(audio_tracks, input_path)
 
             # Check if all tracks are being kept (no Tamil detected or all tracks are Tamil)
             keeping_all_tracks = len(tamil_track_ids) == len(audio_tracks)
