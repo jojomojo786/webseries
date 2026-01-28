@@ -285,7 +285,7 @@ def save_to_database(data: list[dict]) -> tuple[int, int, int]:
                             if info_hash:
                                 # Check if any existing torrent has this info_hash
                                 cursor.execute('''
-                                    SELECT id, link FROM torrents WHERE season_id = %s AND link LIKE %s
+                                    SELECT id FROM torrents WHERE season_id = %s AND link LIKE %s LIMIT 1
                                 ''', (season_id, f'%btih:{info_hash}%'))
                                 existing = cursor.fetchone()
                                 if existing:
@@ -295,20 +295,23 @@ def save_to_database(data: list[dict]) -> tuple[int, int, int]:
                         elif link in existing_torrents:
                             continue  # Skip duplicate for .torrent files
 
-                        # Determine quality from name
-                        name_lower = torrent.get('name', '').lower()
-                        if '2160p' in name_lower or '4k' in name_lower:
-                            torrent_quality = '4k'
-                        elif '1080p' in name_lower:
-                            torrent_quality = '1080p'
-                        elif '720p' in name_lower:
-                            torrent_quality = '720p'
-                        elif '480p' in name_lower:
-                            torrent_quality = '480p'
-                        elif '360p' in name_lower:
-                            torrent_quality = '360p'
-                        else:
-                            torrent_quality = 'unknown'
+                        # Use pre-computed quality from scraper (includes AI detection)
+                        # Fallback to simple pattern matching if not present
+                        torrent_quality = torrent.get('quality')
+                        if not torrent_quality:
+                            name_lower = torrent.get('name', '').lower()
+                            if '2160p' in name_lower or '4k' in name_lower:
+                                torrent_quality = '4k'
+                            elif '1080p' in name_lower:
+                                torrent_quality = '1080p'
+                            elif '720p' in name_lower:
+                                torrent_quality = '720p'
+                            elif '480p' in name_lower:
+                                torrent_quality = '480p'
+                            elif '360p' in name_lower:
+                                torrent_quality = '360p'
+                            else:
+                                torrent_quality = 'unknown'
 
                         cursor.execute('''
                             INSERT INTO torrents (series_id, season_id, type, name, link, size_human, quality)

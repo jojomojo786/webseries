@@ -248,56 +248,143 @@ def is_4k_torrent(name: str) -> bool:
     return any(p in name_lower for p in patterns_4k)
 
 
-def detect_quality_with_ai(name: str) -> str:
-    """Use OpenRouter GPT-5-nano to detect video quality from torrent name"""
+def estimate_quality_from_size(size_bytes: int, name: str) -> str | None:
+    """
+    Estimate quality from file size when name doesn't contain explicit quality markers.
+    Uses heuristic: larger files typically mean higher quality.
+
+    Returns estimated quality or None if can't determine.
+    """
+    if size_bytes == 0:
+        return None
+
+    # Extract episode count to calculate per-episode size
+    name_lower = name.lower()
+    episode_count = 1  # default
+
+    # Try to extract episode count for batch releases
+    range_match = re.search(r'ep\s*\((\d+)-(\d+)\)', name_lower)
+    if range_match:
+        episode_count = int(range_match.group(2)) - int(range_match.group(1)) + 1
+    else:
+        # Single episode pattern
+        if re.search(r'ep\d+|s\d+e\d+', name_lower):
+            episode_count = 1
+
+    size_per_episode_mb = size_bytes / episode_count / (1024 * 1024)
+
+    # Heuristic thresholds (per episode)
+    if size_per_episode_mb > 1500:  # > 1.5GB per episode
+        return "4k"
+    elif size_per_episode_mb > 500:  # > 500MB per episode
+        return "1080p"
+    elif size_per_episode_mb > 250:  # > 250MB per episode
+        return "720p"
+    elif size_per_episode_mb > 100:  # > 100MB per episode
+        return "480p"
+    else:
+        return "360p"
+
+
+def detect_quality_with_ai(name: str, size_bytes: int = 0) -> str:
+    """
+    Use OpenRouter GPT-5-nano to detect video quality from torrent name and size.
+
+    Args:
+        name: Torrent name
+        size_bytes: File size in bytes (helps AI make better inferences)
+
+    Returns:
+        Detected quality: 4k, 1080p, 720p, 480p, 360p, or unknown
+    """
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         logger.warning("OPENROUTER_API_KEY not found, returning unknown")
         return "unknown"
 
-    try:
-        response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "openai/gpt-5-nano",
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are a video quality detector. Analyze the torrent name and determine the video quality. Respond with ONLY one of these exact values: 4k, 1080p, 720p, 480p, 360p. If you cannot determine the quality with reasonable confidence, respond with: unknown. No explanations, just the quality value."
-                    },
-                    {
-                        "role": "user",
-                        "content": f"What is the video quality of this torrent: {name}"
-                    }
-                ],
-                "max_tokens": 10000,
-                "temperature": 0
-            },
-            timeout=10
-        )
-        response.raise_for_status()
-        result = response.json()
-        quality = result["choices"][0]["message"]["content"].strip().lower()
-
-        # Validate the response
-        valid_qualities = ["4k", "1080p", "720p", "480p", "360p", "unknown"]
-        if quality in valid_qualities:
-            logger.info(f"    🤖 AI detected quality: {quality} for {name[:50]}...")
-            return quality
+    # Build prompt with size information
+    size_info = ""
+    if size_bytes > 0:
+        size_mb = size_bytes / (1024 * 1024)
+        size_gb = size_mb / 1024
+        if size_gb >= 1:
+            size_info = f" Size: {size_gb:.2f}GB ({size_mb:.0f}MB)."
         else:
-            logger.warning(f"    AI returned invalid quality '{quality}', using unknown")
+            size_info = f" Size: {size_mb:.0f}MB."
+
+    # Try to extract episode info for context
+    episode_info = ""
+    range_match = re.search(r'ep\s*\((\d+)-(\d+)\)', name.lower())
+    if range_match:
+        ep_count = int(range_match.group(2)) - int(range_match.group(1)) + 1
+        if size_bytes > 0:
+            size_per_ep_mb = size_bytes / ep_count / (1024 * 1024)
+            episode_info = f" This appears to be {ep_count} episodes (~{size_per_ep_mb:.0f}MB per episode)."
+
+    for attempt in range(2):  # Retry once on failure
+        try:
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "openai/gpt-5-nano",
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": "You are a video quality detector. Analyze the torrent name and determine the video quality. Respond with ONLY one of these exact values: 4k, 1080p, 720p, 480p, 360p. If you cannot determine the quality with reasonable confidence, respond with: unknown. No explanations, just the quality value."
+                        },
+                        {
+                            "role": "user",
+                            "content": f"What is the video quality of this torrent: {name}{size_info}{episode_info}"
+                        }
+                    ],
+                    "max_tokens": 10000,
+                    "temperature": 0
+                },
+                timeout=15
+            )
+            response.raise_for_status()
+            result = response.json()
+            quality = result["choices"][0]["message"]["content"].strip().lower()
+
+            # Validate the response
+            valid_qualities = ["4k", "1080p", "720p", "480p", "360p", "unknown"]
+            if quality in valid_qualities:
+                logger.info(f"    🤖 AI detected quality: {quality} for {name[:50]}...")
+                return quality
+            else:
+                logger.warning(f"    AI returned invalid quality '{quality}', using unknown")
+                return "unknown"
+
+        except requests.exceptions.Timeout:
+            logger.warning(f"    AI request timed out (attempt {attempt + 1}/2)")
+            if attempt == 0:
+                time.sleep(1)
+                continue
+        except requests.RequestException as e:
+            logger.warning(f"    AI request failed: {e}")
             return "unknown"
-    except Exception as e:
-        logger.warning(f"    AI quality detection failed: {e}")
-        return "unknown"
+        except Exception as e:
+            logger.warning(f"    AI quality detection failed: {e}")
+            return "unknown"
+
+    return "unknown"
 
 
-def get_torrent_quality(name: str) -> str:
-    """Extract quality from torrent name, use AI if pattern matching fails"""
+def get_torrent_quality(name: str, size_bytes: int = 0) -> str:
+    """
+    Extract quality from torrent name, use AI if pattern matching fails.
+
+    Args:
+        name: Torrent name
+        size_bytes: File size in bytes (passed to AI for better inference)
+
+    Returns:
+        Detected quality: 4k, 1080p, 720p, 480p, 360p, or unknown
+    """
     name_lower = name.lower()
     if "2160p" in name_lower or "4k" in name_lower:
         return "4k"
@@ -311,7 +398,7 @@ def get_torrent_quality(name: str) -> str:
         return "360p"
 
     # Use AI to detect quality when pattern matching fails
-    return detect_quality_with_ai(name)
+    return detect_quality_with_ai(name, size_bytes)
 
 
 def extract_episode_range(name: str) -> str:
@@ -477,10 +564,13 @@ def scrape_forum(max_pages: int = None, include_torrents: bool = True, highest_q
                         if highest_quality:
                             torrents, _ = filter_highest_quality(torrents)
 
+                        # Add quality to each torrent (with AI detection)
+                        for t in torrents:
+                            t['quality'] = get_torrent_quality(t['name'], t.get('size_bytes', 0))
+
                         # Show torrent summary
                         for t in torrents[:3]:  # Show first 3 torrents
-                            quality = get_torrent_quality(t['name'])
-                            logger.info(f"    ✔ {quality:6s} | {t['size_human']:>10s} | {t['name'][:50]}...")
+                            logger.info(f"    ✔ {t['quality']:6s} | {t['size_human']:>10s} | {t['name'][:50]}...")
                         if len(torrents) > 3:
                             logger.info(f"    ... and {len(torrents) - 3} more torrent(s)")
 
