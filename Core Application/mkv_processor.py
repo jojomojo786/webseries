@@ -193,7 +193,7 @@ class MKVProcessor:
             audio_tracks: List of AudioTrack objects
 
         Returns:
-            List of track IDs to keep
+            List of track IDs to keep (all tracks if no Tamil detected)
         """
         tamil_tracks = []
 
@@ -212,12 +212,11 @@ class MKVProcessor:
                     logger.debug(f"Found Tamil track by name: {track}")
                     continue
 
-        # Fallback: if no Tamil tracks found and fallback is enabled, keep first audio track
-        # This is useful for releases like 1TamilMV where Tamil is typically the first track
-        if not tamil_tracks and self.keep_first_audio_as_fallback and audio_tracks:
-            first_track = audio_tracks[0]
-            tamil_tracks.append(first_track.track_id)
-            logger.info(f"No Tamil tracks identified by language/name, using first track as fallback: {first_track}")
+        # If no Tamil tracks found, keep ALL audio tracks (safer than guessing)
+        if not tamil_tracks and audio_tracks:
+            all_track_ids = [t.track_id for t in audio_tracks]
+            logger.info(f"No Tamil tracks identified - keeping all {len(all_track_ids)} audio tracks")
+            return all_track_ids
 
         return tamil_tracks
 
@@ -321,11 +320,23 @@ class MKVProcessor:
 
             if not audio_tracks:
                 logger.warning(f"No audio tracks found in: {filename}")
+                if dry_run:
+                    logger.info(f"[DRY RUN] No audio tracks - would move to processed/ as-is")
+                    rel_path = os.path.relpath(input_path, self.completed_dir)
+                    output_path = os.path.join(self.processed_dir, rel_path)
+                    return ProcessResult(
+                        success=True,
+                        input_path=input_path,
+                        output_path=output_path,
+                        tamil_tracks_found=0,
+                        total_audio_tracks=0,
+                        error="No audio tracks found",
+                        processing_time=time.time() - start_time
+                    )
                 # Move to processed/ as-is, preserving folder structure
                 rel_path = os.path.relpath(input_path, self.completed_dir)
                 output_path = os.path.join(self.processed_dir, rel_path)
-                if not dry_run:
-                    self._move_to_processed(input_path)
+                self._move_to_processed(input_path)
                 return ProcessResult(
                     success=True,
                     input_path=input_path,
@@ -339,14 +350,69 @@ class MKVProcessor:
             # Step 2: Find Tamil tracks
             tamil_track_ids = self.find_tamil_tracks(audio_tracks)
 
-            if not tamil_track_ids:
-                logger.warning(f"No Tamil audio tracks found in: {filename}")
-                logger.info(f"Audio tracks: {audio_tracks}")
+            # Check if all tracks are being kept (no Tamil detected or all tracks are Tamil)
+            keeping_all_tracks = len(tamil_track_ids) == len(audio_tracks)
+
+            if keeping_all_tracks:
+                # No need to run mkvmerge, just move the file as-is
+                logger.info(f"Keeping all {len(audio_tracks)} audio tracks - moving without processing")
+                if dry_run:
+                    logger.info(f"[DRY RUN] Would move to processed/ without mkvmerge (all tracks kept)")
+                    logger.info(f"  Found {len(audio_tracks)} audio track(s):")
+                    for track in audio_tracks:
+                        lang_display = track.language_code or "unknown"
+                        name_display = track.track_name or "(no name)"
+                        logger.info(f"    [KEEP] Track {track.track_id}: {track.codec} | lang={lang_display} | name={name_display}")
+                    rel_path = os.path.relpath(input_path, self.completed_dir)
+                    output_path = os.path.join(self.processed_dir, rel_path)
+                    return ProcessResult(
+                        success=True,
+                        input_path=input_path,
+                        output_path=output_path,
+                        tamil_tracks_found=0,  # 0 because no specific Tamil was detected
+                        total_audio_tracks=len(audio_tracks),
+                        error=None,
+                        processing_time=time.time() - start_time
+                    )
                 # Move to processed/ as-is, preserving folder structure
                 rel_path = os.path.relpath(input_path, self.completed_dir)
                 output_path = os.path.join(self.processed_dir, rel_path)
-                if not dry_run:
-                    self._move_to_processed(input_path)
+                self._move_to_processed(input_path)
+                return ProcessResult(
+                    success=True,
+                    input_path=input_path,
+                    output_path=output_path,
+                    tamil_tracks_found=0,  # 0 because no specific Tamil was detected
+                    total_audio_tracks=len(audio_tracks),
+                    error=None,
+                    processing_time=time.time() - start_time
+                )
+
+            if not tamil_track_ids:
+                logger.warning(f"No Tamil audio tracks found in: {filename}")
+                logger.info(f"Audio tracks: {audio_tracks}")
+                if dry_run:
+                    logger.info(f"[DRY RUN] No Tamil tracks - would move to processed/ as-is")
+                    logger.info(f"  Found {len(audio_tracks)} audio track(s):")
+                    for track in audio_tracks:
+                        lang_display = track.language_code or "unknown"
+                        name_display = track.track_name or "(no name)"
+                        logger.info(f"    [DROP] Track {track.track_id}: {track.codec} | lang={lang_display} | name={name_display}")
+                    rel_path = os.path.relpath(input_path, self.completed_dir)
+                    output_path = os.path.join(self.processed_dir, rel_path)
+                    return ProcessResult(
+                        success=True,
+                        input_path=input_path,
+                        output_path=output_path,
+                        tamil_tracks_found=0,
+                        total_audio_tracks=len(audio_tracks),
+                        error="No Tamil audio found",
+                        processing_time=time.time() - start_time
+                    )
+                # Move to processed/ as-is, preserving folder structure
+                rel_path = os.path.relpath(input_path, self.completed_dir)
+                output_path = os.path.join(self.processed_dir, rel_path)
+                self._move_to_processed(input_path)
                 return ProcessResult(
                     success=True,
                     input_path=input_path,
@@ -373,8 +439,16 @@ class MKVProcessor:
 
             if dry_run:
                 logger.info(f"[DRY RUN] Would process: {filename}")
-                logger.info(f"  Tamil tracks: {tamil_track_ids} of {len(audio_tracks)} total")
                 logger.info(f"  Output: {processing_path}")
+                logger.info(f"  Found {len(audio_tracks)} audio track(s):")
+                for track in audio_tracks:
+                    is_tamil = track.track_id in tamil_track_ids
+                    status = "KEEP" if is_tamil else "DROP"
+                    lang_display = track.language_code or "unknown"
+                    name_display = track.track_name or "(no name)"
+                    logger.info(f"    [{status}] Track {track.track_id}: {track.codec} | lang={lang_display} | name={name_display}")
+                logger.info(f"  Tamil tracks to keep: {tamil_track_ids} ({len(tamil_track_ids)}/{len(audio_tracks)})")
+                logger.info(f"  Command: {' '.join(cmd)}")
                 return ProcessResult(
                     success=True,
                     input_path=input_path,
