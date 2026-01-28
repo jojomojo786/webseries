@@ -17,10 +17,15 @@ from bs4 import BeautifulSoup
 import json
 import re
 import time
+import os
 from datetime import datetime
 from urllib.parse import urljoin
+from dotenv import load_dotenv
 
 from logger import get_logger
+
+# Load environment variables
+load_dotenv()
 
 BASE_URL = "https://www.1tamilmv.rsvp"
 
@@ -205,10 +210,10 @@ def extract_torrents_from_topic(soup: BeautifulSoup) -> list[dict]:
                 "size_human": format_size(size_bytes) if size_bytes > 0 else "unknown"
             })
 
-    # Find .torrent file links
+    # Find .torrent file links (exclude magnet links that contain .torrent in the name)
     for link in soup.find_all("a", href=re.compile(r"\.torrent")):
         torrent_url = link.get("href")
-        if torrent_url:
+        if torrent_url and not torrent_url.startswith("magnet:"):
             name = link.get_text(strip=True) or torrent_url.split("/")[-1]
             size_bytes = parse_size_from_name(name)
             torrents.append({
@@ -243,8 +248,56 @@ def is_4k_torrent(name: str) -> bool:
     return any(p in name_lower for p in patterns_4k)
 
 
+def detect_quality_with_ai(name: str) -> str:
+    """Use OpenRouter GPT-5-nano to detect video quality from torrent name"""
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        logger.warning("OPENROUTER_API_KEY not found, returning unknown")
+        return "unknown"
+
+    try:
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "openai/gpt-5-nano",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a video quality detector. Analyze the torrent name and determine the video quality. Respond with ONLY one of these exact values: 4k, 1080p, 720p, 480p, 360p. If you cannot determine the quality with reasonable confidence, respond with: unknown. No explanations, just the quality value."
+                    },
+                    {
+                        "role": "user",
+                        "content": f"What is the video quality of this torrent: {name}"
+                    }
+                ],
+                "max_tokens": 10000,
+                "temperature": 0
+            },
+            timeout=10
+        )
+        response.raise_for_status()
+        result = response.json()
+        quality = result["choices"][0]["message"]["content"].strip().lower()
+
+        # Validate the response
+        valid_qualities = ["4k", "1080p", "720p", "480p", "360p", "unknown"]
+        if quality in valid_qualities:
+            logger.info(f"    🤖 AI detected quality: {quality} for {name[:50]}...")
+            return quality
+        else:
+            logger.warning(f"    AI returned invalid quality '{quality}', using unknown")
+            return "unknown"
+    except Exception as e:
+        logger.warning(f"    AI quality detection failed: {e}")
+        return "unknown"
+
+
 def get_torrent_quality(name: str) -> str:
-    """Extract quality from torrent name"""
+    """Extract quality from torrent name, use AI if pattern matching fails"""
     name_lower = name.lower()
     if "2160p" in name_lower or "4k" in name_lower:
         return "4k"
@@ -256,7 +309,9 @@ def get_torrent_quality(name: str) -> str:
         return "480p"
     elif "360p" in name_lower:
         return "360p"
-    return "unknown"
+
+    # Use AI to detect quality when pattern matching fails
+    return detect_quality_with_ai(name)
 
 
 def extract_episode_range(name: str) -> str:
@@ -301,50 +356,31 @@ def extract_episode_range(name: str) -> str:
 
 def filter_highest_quality(torrents: list[dict]) -> tuple[list[dict], bool]:
     """
-    Filter torrents to keep best quality (1080p preferred, exclude 4K).
-    Keeps only the LARGEST torrent per episode range at the best quality.
+    Filter torrents to keep ONLY THE LARGEST size torrent per episode range.
+    Ignores quality preferences - always uses largest file (including 4K).
 
     Returns:
-        tuple: (filtered_torrents, is_4k_only) - is_4k_only is True if only 4K was available
+        tuple: (filtered_torrents, is_4k_only) - is_4k_only is always False now
     """
     if not torrents:
         return [], False
 
-    # First, filter out 4K torrents
-    non_4k_torrents = [t for t in torrents if not is_4k_torrent(t.get("name", ""))]
+    # Group ALL torrents by episode range (including 4K)
+    episode_groups: dict[str, list[dict]] = {}
+    for t in torrents:
+        ep_range = extract_episode_range(t.get("name", ""))
+        if ep_range not in episode_groups:
+            episode_groups[ep_range] = []
+        episode_groups[ep_range].append(t)
 
-    # If all torrents are 4K, return empty and flag it
-    if not non_4k_torrents:
-        # Return the 4K links for display but flag as 4K-only
-        sorted_4k = sorted(torrents, key=lambda x: x.get("size_bytes", 0), reverse=True)
-        return sorted_4k, True
+    # Keep only the largest torrent per episode range
+    filtered = []
+    for ep_range, group in episode_groups.items():
+        largest = max(group, key=lambda x: x.get("size_bytes", 0))
+        filtered.append(largest)
 
-    # Group torrents by quality
-    quality_priority = ["1080p", "720p", "480p", "360p", "unknown"]
-
-    # Find the best available quality
-    for quality in quality_priority:
-        quality_torrents = [t for t in non_4k_torrents if get_torrent_quality(t.get("name", "")) == quality]
-        if quality_torrents:
-            # Group by episode range and keep only largest per range
-            episode_groups: dict[str, list[dict]] = {}
-            for t in quality_torrents:
-                ep_range = extract_episode_range(t.get("name", ""))
-                if ep_range not in episode_groups:
-                    episode_groups[ep_range] = []
-                episode_groups[ep_range].append(t)
-
-            # Keep only the largest torrent per episode range
-            filtered = []
-            for ep_range, group in episode_groups.items():
-                largest = max(group, key=lambda x: x.get("size_bytes", 0))
-                filtered.append(largest)
-
-            # Sort by size descending
-            return sorted(filtered, key=lambda x: x.get("size_bytes", 0), reverse=True), False
-
-    # Fallback: return all non-4K torrents sorted by size
-    return sorted(non_4k_torrents, key=lambda x: x.get("size_bytes", 0), reverse=True), False
+    # Sort by size descending
+    return sorted(filtered, key=lambda x: x.get("size_bytes", 0), reverse=True), False
 
 
 def get_total_pages(soup: BeautifulSoup) -> int:
@@ -377,7 +413,7 @@ def scrape_forum(max_pages: int = None, include_torrents: bool = True, highest_q
     Args:
         max_pages: Maximum number of pages to scrape (None for all)
         include_torrents: Whether to also scrape torrent links from each topic
-        highest_quality: If True, only keep the largest (highest quality) torrent per topic
+        highest_quality: If True, only keep the largest size torrent per episode range (includes 4K)
         sort_by: 'start_date' (newly created topics) or 'last_post' (recently updated topics)
 
     Returns:
@@ -385,7 +421,7 @@ def scrape_forum(max_pages: int = None, include_torrents: bool = True, highest_q
     """
     logger.info("Starting scrape of 1TamilMV Web Series forum...")
     if highest_quality:
-        logger.info("  Mode: Best quality (1080p preferred, 4K excluded)")
+        logger.info("  Mode: Largest size only (includes 4K, no quality filtering)")
     logger.info(f"  Sort by: {sort_by}")
 
     forum_url = get_forum_url(sort_by)
@@ -426,33 +462,36 @@ def scrape_forum(max_pages: int = None, include_torrents: bool = True, highest_q
             }
 
             if include_torrents:
-                logger.debug(f"  Fetching torrents for: {topic['title'][:50]}...")
+                logger.info(f"  🔍 Fetching: {topic['title'][:60]}...")
                 topic_soup = get_page(topic["url"])
                 if topic_soup:
                     # Extract poster image
                     poster_url = extract_poster_from_topic(topic_soup)
                     if poster_url:
                         item["poster_url"] = poster_url
-                        logger.debug(f"    Found poster: {poster_url[:60]}...")
 
                     torrents = extract_torrents_from_topic(topic_soup)
 
-                    # Filter for highest quality if requested
-                    if highest_quality and torrents:
-                        torrents, is_4k_only = filter_highest_quality(torrents)
-                        if torrents:
-                            quality = get_torrent_quality(torrents[0]['name'])
-                            if is_4k_only:
-                                logger.warning(f"    4K ONLY: {torrents[0]['size_human']} - {torrents[0]['name'][:50]}...")
-                                torrents = []  # Don't include 4K-only entries
-                            else:
-                                logger.info(f"    {len(torrents)}x {quality} torrents (largest: {torrents[0]['size_human']})")
-                    else:
-                        logger.info(f"    Found {len(torrents)} torrent links")
+                    if torrents:
+                        # Filter for largest size per episode range if requested
+                        if highest_quality:
+                            torrents, _ = filter_highest_quality(torrents)
 
-                    item["torrents"] = torrents
+                        # Show torrent summary
+                        for t in torrents[:3]:  # Show first 3 torrents
+                            quality = get_torrent_quality(t['name'])
+                            logger.info(f"    ✔ {quality:6s} | {t['size_human']:>10s} | {t['name'][:50]}...")
+                        if len(torrents) > 3:
+                            logger.info(f"    ... and {len(torrents) - 3} more torrent(s)")
+
+                        item["torrents"] = torrents
+                    else:
+                        logger.info(f"    ✗ No torrents found, skipping")
+                        time.sleep(0.5)
+                        continue  # Skip topics without torrents
                 else:
-                    item["torrents"] = []
+                    logger.info(f"    ✗ Failed to fetch page, skipping")
+                    continue  # Skip if page couldn't be fetched
                 time.sleep(0.5)  # Be nice to the server
 
             all_items.append(item)
