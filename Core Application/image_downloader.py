@@ -6,12 +6,14 @@ Downloads images to /home/webseries/Data & Cache/downloads/images/
 with filename format: Series-Name-Year-Webseries-Poster.jpg / Series-Name-Year-Webseries-Cover.jpg
 
 Stores only filename in database (not full path)
+Uploads to R2 bucket and stores CDN URL in database
 """
 
 import os
 import sys
 import re
 import requests
+import boto3
 from pathlib import Path
 from urllib.parse import urlparse
 from typing import Optional, Dict
@@ -27,6 +29,14 @@ logger = get_logger(__name__)
 
 # Image storage directory
 IMAGES_DIR = Path('/home/webseries/Data & Cache/downloads/images')
+
+# R2 Configuration
+R2_ACCOUNT_ID = '446aaf2cb9816f2d7955ffb48ee15c42'
+R2_ACCESS_KEY = '15cb493b20d5dca2c8ab0856cddf4693'
+R2_SECRET_KEY = 'ca8c7ee9d6b71bc4ad4fddf20eedb2227f0ddb56fed746ec8886479cc14b1e53'
+R2_BUCKET = 'tamil-movies'
+R2_CUSTOM_DOMAIN = 'cdn.jojoplayer.com'
+R2_ENDPOINT = f'https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com'
 
 
 def sanitize_filename(name: str) -> str:
@@ -131,9 +141,56 @@ def download_image(url: str, save_path: Path, timeout: int = 30) -> bool:
         return False
 
 
+def get_r2_client():
+    """
+    Get boto3 S3 client configured for Cloudflare R2
+
+    Returns:
+        S3 client configured for R2
+    """
+    return boto3.client(
+        's3',
+        endpoint_url=R2_ENDPOINT,
+        aws_access_key_id=R2_ACCESS_KEY,
+        aws_secret_access_key=R2_SECRET_KEY,
+        region_name='auto'
+    )
+
+
+def upload_to_r2(local_path: Path, filename: str) -> Optional[str]:
+    """
+    Upload image to R2 bucket and return CDN URL
+
+    Args:
+        local_path: Local path to the image file
+        filename: Filename to use in R2 bucket
+
+    Returns:
+        CDN URL (https://cdn.jojoplayer.com/filename) or None if failed
+    """
+    try:
+        s3_client = get_r2_client()
+
+        # Upload to R2
+        s3_client.upload_file(
+            str(local_path),
+            R2_BUCKET,
+            filename,
+            ExtraArgs={'ContentType': 'image/jpeg'}
+        )
+
+        cdn_url = f'https://{R2_CUSTOM_DOMAIN}/{filename}'
+        logger.info(f"✓ Uploaded to R2: {cdn_url}")
+        return cdn_url
+
+    except Exception as e:
+        logger.error(f"Failed to upload {filename} to R2: {e}")
+        return None
+
+
 def download_series_images(series_id: int, series_data: Dict, force: bool = False) -> Dict[str, Optional[str]]:
     """
-    Download poster and backdrop images for a series
+    Download poster and backdrop images for a series and upload to R2
 
     Args:
         series_id: Series database ID
@@ -159,8 +216,12 @@ def download_series_images(series_id: int, series_data: Dict, force: bool = Fals
 
         if force or not poster_path.exists():
             if download_image(poster_url, poster_path):
+                # Upload to R2
+                upload_to_r2(poster_path, poster_filename)
                 result['poster_path'] = poster_filename
         elif poster_path.exists():
+            # File exists, upload to R2 if not already there
+            upload_to_r2(poster_path, poster_filename)
             result['poster_path'] = poster_filename
 
     # Download backdrop/cover
@@ -171,8 +232,12 @@ def download_series_images(series_id: int, series_data: Dict, force: bool = Fals
 
         if force or not cover_path.exists():
             if download_image(backdrop_url, cover_path):
+                # Upload to R2
+                upload_to_r2(cover_path, cover_filename)
                 result['cover_path'] = cover_filename
         elif cover_path.exists():
+            # File exists, upload to R2 if not already there
+            upload_to_r2(cover_path, cover_filename)
             result['cover_path'] = cover_filename
 
     return result
