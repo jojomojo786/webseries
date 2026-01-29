@@ -20,12 +20,26 @@ sys.path.insert(0, str(script_dir))
 
 import os
 import re
+import requests
 import click
 from db import get_connection
 from logger import get_logger
 import tmdb_cache
 import progress
 import openrouter_client
+
+# Import IMDB search functions for fallback
+try:
+    sys.path.insert(0, str(script_dir / "Metadata Fetching"))
+    from imdb import search_imdb_by_title, fetch_tmdb_by_imdb
+except ImportError:
+    # Fallback if IMDB module not available
+    def search_imdb_by_title(title, year=None):
+        logger.warning("IMDB module not available")
+        return None
+    def fetch_tmdb_by_imdb(imdb_id):
+        logger.warning("IMDB module not available")
+        return None
 
 logger = get_logger(__name__)
 
@@ -533,6 +547,58 @@ def match_series_from_tmdb(series_id: int, dry_run: bool = False) -> dict | None
 
         if not results:
             logger.warning(f"No TMDB results found for '{clean_title}'")
+
+            # FALLBACK: Try IMDB search via RapidAPI
+            logger.info("Trying IMDB search as fallback...")
+            imdb_result = search_imdb_by_title(clean_title, series.get('year'))
+
+            if imdb_result:
+                # Use IMDB ID to find TMDB data
+                tmdb_from_imdb = fetch_tmdb_by_imdb(imdb_result['imdb_id'])
+                if tmdb_from_imdb:
+                    logger.info(f"Found via IMDB fallback: {tmdb_from_imdb.get('name') or clean_title} (TMDB ID: {tmdb_from_imdb.get('tmdb_id')})")
+
+                    if dry_run:
+                        logger.info(f"[DRY RUN] Would update series {series_id} with IMDB-sourced TMDB ID {tmdb_from_imdb.get('tmdb_id')}")
+                        return {
+                            'id': tmdb_from_imdb.get('tmdb_id'),
+                            'name': imdb_result.get('title'),
+                            'imdb_id': imdb_result['imdb_id'],
+                            'from_imdb': True
+                        }
+
+                    # Update with IMDB-sourced TMDB data
+                    update_fields = {
+                        'tmdb_id': tmdb_from_imdb.get('tmdb_id'),
+                        'imdb_id': imdb_result['imdb_id'],
+                    }
+                    if tmdb_from_imdb.get('poster_url'):
+                        update_fields['poster_url'] = tmdb_from_imdb['poster_url']
+                    if tmdb_from_imdb.get('backdrop_url'):
+                        update_fields['backdrop_url'] = tmdb_from_imdb['backdrop_url']
+                    if tmdb_from_imdb.get('overview'):
+                        update_fields['summary'] = tmdb_from_imdb['overview'][:500]
+                    if tmdb_from_imdb.get('vote_average'):
+                        update_fields['rating'] = tmdb_from_imdb['vote_average']
+
+                    # Build UPDATE query (same as TMDB path)
+                    set_clause = ', '.join([f"{field} = %s" for field in update_fields.keys()])
+                    values = list(update_fields.values()) + [series_id]
+
+                    cursor.execute(
+                        f"UPDATE series SET {set_clause} WHERE id = %s",
+                        values
+                    )
+                    conn.commit()
+
+                    logger.info(f"Updated series {series_id} with IMDB-sourced TMDB ID {tmdb_from_imdb.get('tmdb_id')}")
+                    return {
+                        'id': tmdb_from_imdb.get('tmdb_id'),
+                        'name': imdb_result.get('title'),
+                        'imdb_id': imdb_result['imdb_id'],
+                        'from_imdb': True
+                    }
+
             return None
 
         # Try to find the best match
