@@ -80,8 +80,18 @@ from commands.run import run
 from commands.db import db_group
 from commands.download import download, move_completed
 from commands.process import process, process_watch
+from commands.status import check_status, status_cmd
 from episodes import episodes
-import jojoplayer
+
+# Import jojoplayer (may fail if dependencies missing)
+try:
+    import jojoplayer
+    jojoplayer.jojoplayer
+    HAS_JOJOPLAYER = True
+except ImportError as e:
+    HAS_JOJOPLAYER = False
+    import warnings
+    warnings.warn(f"jojoplayer module not available: {e}")
 
 # Register commands
 cli.add_command(run)
@@ -90,8 +100,11 @@ cli.add_command(download)
 cli.add_command(move_completed)
 cli.add_command(process)
 cli.add_command(process_watch)
+cli.add_command(check_status)
+cli.add_command(status_cmd)
 cli.add_command(episodes)
-cli.add_command(jojoplayer.jojoplayer)
+if HAS_JOJOPLAYER:
+    cli.add_command(jojoplayer.jojoplayer)
 
 
 if __name__ == '__main__':
