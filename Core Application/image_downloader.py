@@ -166,20 +166,21 @@ def upload_to_r2(local_path: Path, filename: str) -> Optional[str]:
         filename: Filename to use in R2 bucket
 
     Returns:
-        CDN URL (https://cdn.jojoplayer.com/filename) or None if failed
+        CDN URL (https://cdn.jojoplayer.com/wp-content/uploads/filename) or None if failed
     """
     try:
         s3_client = get_r2_client()
 
-        # Upload to R2
+        # Upload to R2 with folder path
+        r2_key = f'wp-content/uploads/{filename}'
         s3_client.upload_file(
             str(local_path),
             R2_BUCKET,
-            filename,
+            r2_key,
             ExtraArgs={'ContentType': 'image/jpeg'}
         )
 
-        cdn_url = f'https://{R2_CUSTOM_DOMAIN}/{filename}'
+        cdn_url = f'https://{R2_CUSTOM_DOMAIN}/wp-content/uploads/{filename}'
         logger.info(f"✓ Uploaded to R2: {cdn_url}")
         return cdn_url
 
