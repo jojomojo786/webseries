@@ -478,10 +478,21 @@ def download_series_images(series_id: int, series_data: Dict, force: bool = Fals
             else:
                 logger.warning(f"  ⚠ TMDB poster_url failed")
 
-        # If TMDB failed, try original_poster_url (from scrape)
+        # If TMDB failed, try imdb_poster_url (from IMDB/RapidAPI)
+        if not poster_downloaded:
+            imdb_poster_url = series_data.get('imdb_poster_url')
+            if imdb_poster_url and imdb_poster_url != poster_url:
+                logger.info(f"  Trying imdb_poster_url (IMDB/RapidAPI): {imdb_poster_url}")
+                if download_image(imdb_poster_url, poster_path):
+                    poster_downloaded = True
+                    logger.info(f"  ✓ Downloaded from IMDB poster")
+                else:
+                    logger.warning(f"  ⚠ IMDB poster_url download failed")
+
+        # If both failed, try original_poster_url (from scrape) with validation
         if not poster_downloaded:
             original_poster_url = series_data.get('original_poster_url')
-            if original_poster_url and original_poster_url != poster_url:
+            if original_poster_url and original_poster_url != poster_url and original_poster_url != imdb_poster_url:
                 logger.info(f"  Trying original_poster_url: {original_poster_url}")
 
                 # Validate if image is actually a poster (not a cover) using OpenRouter
@@ -500,7 +511,7 @@ def download_series_images(series_id: int, series_data: Dict, force: bool = Fals
                     logger.warning(f"     Dimensions: {validation.get('dimensions', 'unknown')}")
                     # Skip this source, will use default poster
 
-        # If both failed, use default poster
+        # If all failed, use default poster
         if not poster_downloaded:
             logger.warning(f"  ⚠ All poster sources failed, using default")
             copy_default_image(poster_path, 'poster')

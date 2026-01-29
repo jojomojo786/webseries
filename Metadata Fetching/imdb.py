@@ -444,6 +444,10 @@ def parse_imdb_data(imdb_data: dict, tmdb_data: dict = None, tmdb_details: dict 
             if match:
                 result['trailer_key'] = match.group(1)
 
+    # Primary image (poster) from IMDB
+    if imdb_data.get('primaryImage'):
+        result['imdb_poster_url'] = imdb_data['primaryImage']
+
     # Merge TMDB basic data
     if tmdb_data:
         if tmdb_data.get('tmdb_id'):
@@ -530,7 +534,7 @@ def update_series_metadata(series_id: int, metadata: dict, dry_run: bool = False
             'vote_count', 'episode_runtime', 'content_rating', 'origin_country',
             'status', 'first_air_date', 'last_air_date', 'networks',
             'production_companies', 'is_adult', 'in_production',
-            'trailer_key', 'poster_url', 'backdrop_url',
+            'trailer_key', 'poster_url', 'imdb_poster_url', 'backdrop_url',
             'cast', 'directors', 'writers', 'created_by'
         ]:
             if field in metadata and metadata[field] is not None:

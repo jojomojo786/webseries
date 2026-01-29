@@ -739,6 +739,7 @@ def update_series_with_tmdb(series_id: int, tmdb_data: Dict) -> bool:
             'title': metadata.get('name'),
             'year': metadata.get('year'),
             'poster_url': metadata.get('poster_url'),
+            'imdb_poster_url': metadata.get('imdb_poster_url'),  # IMDB poster from RapidAPI
             'original_poster_url': original_poster_url,  # Include for fallback validation
             'backdrop_url': metadata.get('backdrop_url')
         }
