@@ -718,11 +718,28 @@ def update_series_with_tmdb(series_id: int, tmdb_data: Dict) -> bool:
 
         # Step 6: Download poster and backdrop images
         logger.info(f"  📥 Downloading images...")
+
+        # Fetch original_poster_url from database for fallback validation
+        original_poster_url = None
+        try:
+            conn = get_connection()
+            if conn:
+                cursor = conn.cursor(dictionary=True)
+                cursor.execute('SELECT original_poster_url FROM series WHERE id = %s', (series_id,))
+                result = cursor.fetchone()
+                if result:
+                    original_poster_url = result.get('original_poster_url')
+                cursor.close()
+                conn.close()
+        except Exception as e:
+            logger.warning(f"Could not fetch original_poster_url: {e}")
+
         series_data = {
             'name': metadata.get('name'),
             'title': metadata.get('name'),
             'year': metadata.get('year'),
             'poster_url': metadata.get('poster_url'),
+            'original_poster_url': original_poster_url,  # Include for fallback validation
             'backdrop_url': metadata.get('backdrop_url')
         }
         image_paths = download_series_images(series_id, series_data)
