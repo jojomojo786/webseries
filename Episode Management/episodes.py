@@ -31,7 +31,7 @@ import openrouter_client
 # Import IMDB search functions for fallback
 try:
     sys.path.insert(0, str(script_dir / "Metadata Fetching"))
-    from imdb import search_imdb_by_title, fetch_tmdb_by_imdb
+    from imdb import search_imdb_by_title, fetch_tmdb_by_imdb, fetch_tmdb_details, fetch_tmdb_videos
 except ImportError:
     # Fallback if IMDB module not available
     def search_imdb_by_title(title, year=None):
@@ -39,6 +39,10 @@ except ImportError:
         return None
     def fetch_tmdb_by_imdb(imdb_id):
         logger.warning("IMDB module not available")
+        return None
+    def fetch_tmdb_details(tmdb_id, media_type='tv'):
+        return None
+    def fetch_tmdb_videos(tmdb_id, media_type='tv'):
         return None
 
 logger = get_logger(__name__)
@@ -594,6 +598,10 @@ def match_series_from_tmdb(series_id: int, dry_run: bool = False) -> dict | None
                     conn.commit()
 
                     logger.info(f"Updated series {series_id} with IMDB-sourced TMDB ID {tmdb_from_imdb.get('tmdb_id')}")
+
+                    # Fetch extended metadata (networks, production companies, trailer, etc.)
+                    fetch_and_update_full_metadata(series_id, tmdb_from_imdb.get('tmdb_id'), dry_run=dry_run)
+
                     return {
                         'id': tmdb_from_imdb.get('tmdb_id'),
                         'name': imdb_result.get('title'),
@@ -684,6 +692,10 @@ def match_series_from_tmdb(series_id: int, dry_run: bool = False) -> dict | None
         conn.commit()
 
         logger.info(f"Updated series {series_id} with TMDB ID {tmdb_id}")
+
+        # Fetch extended metadata (networks, production companies, trailer, etc.)
+        fetch_and_update_full_metadata(series_id, tmdb_id, dry_run=dry_run)
+
         return best_match
 
     except Exception as e:
@@ -693,6 +705,81 @@ def match_series_from_tmdb(series_id: int, dry_run: bool = False) -> dict | None
     finally:
         cursor.close()
         conn.close()
+
+
+def fetch_and_update_full_metadata(series_id: int, tmdb_id: int, dry_run: bool = False) -> None:
+    """
+    After matching to TMDB, fetch full details and update the database
+
+    Fetches:
+    - Networks, production companies, creators
+    - Status, tagline, episode runtime
+    - Trailer video (YouTube key)
+    - Content rating, origin country
+
+    Args:
+        series_id: Series database ID
+        tmdb_id: TMDB ID to fetch details for
+        dry_run: If True, don't make changes
+    """
+    logger.info(f"Fetching full metadata for TMDB ID {tmdb_id}...")
+
+    # Fetch full TMDB details
+    details = fetch_tmdb_details(tmdb_id, media_type='tv')
+    if details:
+        update_fields = {}
+        if details.get('status'):
+            update_fields['status'] = details['status']
+        if details.get('tagline'):
+            update_fields['tagline'] = details['tagline']
+        if details.get('first_air_date'):
+            update_fields['first_air_date'] = details['first_air_date']
+        if details.get('last_air_date'):
+            update_fields['last_air_date'] = details['last_air_date']
+        if details.get('in_production') is not None:
+            update_fields['in_production'] = 1 if details['in_production'] else 0
+        if details.get('episode_runtime'):
+            update_fields['episode_runtime'] = details['episode_runtime']
+        if details.get('vote_count'):
+            update_fields['vote_count'] = details['vote_count']
+        if details.get('networks'):
+            update_fields['networks'] = details['networks']
+        if details.get('production_companies'):
+            update_fields['production_companies'] = details['production_companies']
+        if details.get('origin_country'):
+            update_fields['origin_country'] = details['origin_country']
+
+        if update_fields:
+            conn = get_connection()
+            if conn:
+                cursor = conn.cursor()
+                try:
+                    set_clause = ', '.join([f"{field} = %s" for field in update_fields.keys()])
+                    values = list(update_fields.values()) + [series_id]
+                    cursor.execute(f"UPDATE series SET {set_clause} WHERE id = %s", values)
+                    conn.commit()
+                    logger.info(f"Updated series {series_id} with extended metadata")
+                except Exception as e:
+                    logger.error(f"Error updating extended metadata: {e}")
+                finally:
+                    cursor.close()
+                    conn.close()
+
+    # Fetch trailer video
+    trailer_key = fetch_tmdb_videos(tmdb_id, media_type='tv')
+    if trailer_key:
+        conn = get_connection()
+        if conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("UPDATE series SET trailer_key = %s WHERE id = %s", (trailer_key, series_id))
+                conn.commit()
+                logger.info(f"Updated series {series_id} with trailer: {trailer_key}")
+            except Exception as e:
+                logger.error(f"Error updating trailer: {e}")
+            finally:
+                cursor.close()
+                conn.close()
 
 
 def update_episode_metadata(episode_id: int, metadata: dict, dry_run: bool = False) -> bool:
@@ -807,6 +894,11 @@ def fetch_and_update_episode_metadata(series_id: int = None, limit: int = 50, dr
             return 0
 
         logger.info(f"Found {len(episodes)} episodes to process")
+
+        # Also fetch full series metadata for the first series we encounter
+        # (to get networks, production companies, trailer, etc.)
+        if episodes and series_id:
+            fetch_and_update_full_metadata(series_id, episodes[0]['tmdb_id'], dry_run)
 
         updated = 0
         failed = 0
