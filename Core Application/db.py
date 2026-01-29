@@ -215,17 +215,19 @@ def save_to_database(data: list[dict]) -> tuple[int, int, int]:
 
             # Step 1: Insert or update series (base info only)
             cursor.execute('''
-                INSERT INTO series (title, url, poster_url, forum_date, created_at)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO series (title, url, poster_url, original_poster_url, forum_date, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     title = VALUES(title),
                     poster_url = COALESCE(VALUES(poster_url), poster_url),
+                    original_poster_url = COALESCE(original_poster_url, VALUES(original_poster_url)),
                     forum_date = COALESCE(VALUES(forum_date), forum_date),
                     created_at = VALUES(created_at)
             ''', (
                 item['title'],
                 item['url'],
                 item.get('poster_url'),
+                item.get('poster_url'),  # original_poster_url gets the same initial value
                 forum_date,
                 datetime.fromisoformat(item['scraped_at']) if item.get('scraped_at') else datetime.now()
             ))

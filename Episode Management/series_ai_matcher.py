@@ -738,7 +738,7 @@ def match_series_with_ai(series_id: int, dry_run: bool = False) -> bool:
     try:
         # Get series info
         cursor.execute('''
-            SELECT id, title, name, year, poster_url
+            SELECT id, title, name, year, poster_url, original_poster_url
             FROM series
             WHERE id = %s
         ''', (series_id,))
@@ -750,7 +750,8 @@ def match_series_with_ai(series_id: int, dry_run: bool = False) -> bool:
 
         series_name = series.get('name') or series.get('title') or 'Unknown'
         year = series.get('year')
-        poster_url = series.get('poster_url')
+        # Use original_poster_url for AI analysis (never changes), fallback to poster_url
+        poster_url = series.get('original_poster_url') or series.get('poster_url')
 
         # Clean the series name for TMDB search
         clean_name = clean_series_name(series_name)
@@ -877,13 +878,13 @@ def match_all_series_with_ai(dry_run: bool = False) -> Dict:
     cursor = conn.cursor(dictionary=True)
 
     try:
-        # Find series with poster_url but no tmdb_id
+        # Find series with original_poster_url but no tmdb_id
+        # Use original_poster_url (never changes) instead of poster_url (can be updated by TMDB)
         cursor.execute('''
-            SELECT id, title, name, year, poster_url
+            SELECT id, title, name, year, poster_url, original_poster_url
             FROM series
             WHERE tmdb_id IS NULL
-            AND poster_url IS NOT NULL
-            AND poster_url != ''
+            AND (original_poster_url IS NOT NULL AND original_poster_url != '')
             ORDER BY id
         ''')
 
