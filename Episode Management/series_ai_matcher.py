@@ -50,6 +50,9 @@ from imdb import (
     search_imdb_by_title
 )
 
+# Import image downloader
+from image_downloader import download_series_images, update_series_image_paths
+
 logger = get_logger(__name__)
 
 # Configuration
@@ -712,6 +715,20 @@ def update_series_with_tmdb(series_id: int, tmdb_data: Dict) -> bool:
                 logger.info(update)
             if len(updates) > 15:
                 logger.info(f"    ... and {len(updates) - 15} more fields")
+
+        # Step 6: Download poster and backdrop images
+        logger.info(f"  📥 Downloading images...")
+        series_data = {
+            'name': metadata.get('name'),
+            'title': metadata.get('name'),
+            'year': metadata.get('year'),
+            'poster_url': metadata.get('poster_url'),
+            'backdrop_url': metadata.get('backdrop_url')
+        }
+        image_paths = download_series_images(series_id, series_data)
+
+        if image_paths.get('poster_path') or image_paths.get('cover_path'):
+            update_series_image_paths(series_id, image_paths)
 
     return result
 
