@@ -572,6 +572,8 @@ def match_series_from_tmdb(series_id: int, dry_run: bool = False) -> dict | None
                         'tmdb_id': tmdb_from_imdb.get('tmdb_id'),
                         'imdb_id': imdb_result['imdb_id'],
                     }
+                    if imdb_result.get('year'):
+                        update_fields['year'] = imdb_result['year']
                     if tmdb_from_imdb.get('poster_url'):
                         update_fields['poster_url'] = tmdb_from_imdb['poster_url']
                     if tmdb_from_imdb.get('backdrop_url'):
