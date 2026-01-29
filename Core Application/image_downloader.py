@@ -3,7 +3,9 @@
 Image Downloader - Download poster and backdrop images from TMDB/IMDB
 
 Downloads images to /home/webseries/Data & Cache/downloads/images/
-with filename format: Series-Name-Year-Poster.jpg / Series-Name-Year-Cover.jpg
+with filename format: Series-Name-Year-Webseries-Poster.jpg / Series-Name-Year-Webseries-Cover.jpg
+
+Stores only filename in database (not full path)
 """
 
 import os
@@ -139,7 +141,7 @@ def download_series_images(series_id: int, series_data: Dict, force: bool = Fals
         force: Re-download even if files exist
 
     Returns:
-        Dict with 'poster_path' and 'cover_path' keys
+        Dict with 'poster_path' and 'cover_path' keys (filenames only, not full paths)
     """
     series_name = series_data.get('name') or series_data.get('title', 'Unknown')
     year = series_data.get('year')
@@ -157,9 +159,9 @@ def download_series_images(series_id: int, series_data: Dict, force: bool = Fals
 
         if force or not poster_path.exists():
             if download_image(poster_url, poster_path):
-                result['poster_path'] = str(poster_path)
+                result['poster_path'] = poster_filename
         elif poster_path.exists():
-            result['poster_path'] = str(poster_path)
+            result['poster_path'] = poster_filename
 
     # Download backdrop/cover
     backdrop_url = series_data.get('backdrop_url')
@@ -169,20 +171,20 @@ def download_series_images(series_id: int, series_data: Dict, force: bool = Fals
 
         if force or not cover_path.exists():
             if download_image(backdrop_url, cover_path):
-                result['cover_path'] = str(cover_path)
+                result['cover_path'] = cover_filename
         elif cover_path.exists():
-            result['cover_path'] = str(cover_path)
+            result['cover_path'] = cover_filename
 
     return result
 
 
 def update_series_image_paths(series_id: int, image_paths: Dict[str, Optional[str]]) -> bool:
     """
-    Update series table with local image paths
+    Update series table with local image filenames (not full paths)
 
     Args:
         series_id: Series database ID
-        image_paths: Dict with 'poster_path' and 'cover_path'
+        image_paths: Dict with 'poster_path' and 'cover_path' (filenames only)
 
     Returns:
         True if update succeeded
@@ -232,7 +234,7 @@ def update_series_image_paths(series_id: int, image_paths: Dict[str, Optional[st
             sql = f"UPDATE series SET {', '.join(update_fields)} WHERE id = %s"
             cursor.execute(sql, values)
             conn.commit()
-            logger.info(f"✓ Updated series {series_id} with local image paths")
+            logger.info(f"✓ Updated series {series_id} with local image filenames")
             return True
 
         cursor.close()
