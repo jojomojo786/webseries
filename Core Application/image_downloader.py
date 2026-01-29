@@ -66,6 +66,10 @@ R2_ENDPOINT = f'https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com'
 # OpenRouter API for image validation
 OPENROUTER_API_KEY = env_vars.get('OPENROUTER_API_KEY', '')
 
+# Cloudflare API for cache purging
+CLOUDFLARE_API_TOKEN = env_vars.get('cloudflareApiToken', '')
+CLOUDFLARE_ZONE_ID = env_vars.get('cloudflareZoneId', '')
+
 
 def validate_image_dimensions(image_url: str, expected_type: str = 'poster') -> Dict[str, any]:
     """
@@ -377,6 +381,56 @@ def upload_to_r2(local_path: Path, filename: str) -> Optional[str]:
         return None
 
 
+def purge_cloudflare_cache(urls: list) -> bool:
+    """
+    Purge Cloudflare cache for specific URLs
+
+    Args:
+        urls: List of URLs to purge from cache
+
+    Returns:
+        True if purge succeeded
+    """
+    if not CLOUDFLARE_API_TOKEN or not CLOUDFLARE_ZONE_ID:
+        logger.warning("Cloudflare API token or zone ID not configured, skipping cache purge")
+        return False
+
+    if not urls:
+        return False
+
+    try:
+        purge_url = f'https://api.cloudflare.com/client/v4/zones/{CLOUDFLARE_ZONE_ID}/purge_cache'
+
+        payload = {
+            'files': urls
+        }
+
+        response = requests.post(
+            purge_url,
+            headers={
+                'Authorization': f'Bearer {CLOUDFLARE_API_TOKEN}',
+                'Content-Type': 'application/json'
+            },
+            json=payload,
+            timeout=30
+        )
+
+        response.raise_for_status()
+        result = response.json()
+
+        if result.get('success'):
+            logger.info(f"✓ Purged {len(urls)} URL(s) from Cloudflare cache")
+            return True
+        else:
+            errors = result.get('errors', [])
+            logger.error(f"Failed to purge cache: {errors}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error purging Cloudflare cache: {e}")
+        return False
+
+
 def download_series_images(series_id: int, series_data: Dict, force: bool = False) -> Dict[str, Optional[str]]:
     """
     Download poster and backdrop images for a series and upload to R2
@@ -404,6 +458,9 @@ def download_series_images(series_id: int, series_data: Dict, force: bool = Fals
         'r2_poster': None,  # Track R2 upload status
         'r2_cover': None   # Track R2 upload status
     }
+
+    # Track successfully uploaded URLs for cache purging
+    uploaded_urls = []
 
     # Download poster with fallback chain
     poster_filename = generate_image_filename(series_name, year, 'poster')
@@ -452,6 +509,8 @@ def download_series_images(series_id: int, series_data: Dict, force: bool = Fals
     cdn_url = upload_to_r2(poster_path, poster_filename)
     result['poster_path'] = poster_filename
     result['r2_poster'] = 1 if cdn_url else 0  # Track R2 upload status
+    if cdn_url:
+        uploaded_urls.append(cdn_url)
 
     # Download backdrop/cover (only if backdrop_url exists, no fallback)
     backdrop_url = series_data.get('backdrop_url')
@@ -465,12 +524,21 @@ def download_series_images(series_id: int, series_data: Dict, force: bool = Fals
                 cdn_url = upload_to_r2(cover_path, cover_filename)
                 result['cover_path'] = cover_filename
                 result['r2_cover'] = 1 if cdn_url else 0  # Track R2 upload status
+                if cdn_url:
+                    uploaded_urls.append(cdn_url)
         elif cover_path.exists():
             # File exists, upload to R2
             cdn_url = upload_to_r2(cover_path, cover_filename)
             result['cover_path'] = cover_filename
             result['r2_cover'] = 1 if cdn_url else 0  # Track R2 upload status
+            if cdn_url:
+                uploaded_urls.append(cdn_url)
     # If no backdrop_url, cover_path remains None
+
+    # Purge Cloudflare cache for all uploaded URLs
+    if uploaded_urls:
+        logger.info(f"  🔄 Purging Cloudflare cache for {len(uploaded_urls)} URL(s)...")
+        purge_cloudflare_cache(uploaded_urls)
 
     return result
 
