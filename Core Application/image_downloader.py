@@ -30,12 +30,33 @@ logger = get_logger(__name__)
 # Image storage directory
 IMAGES_DIR = Path('/home/webseries/Data & Cache/downloads/images')
 
+# Load R2 Configuration from .env file
+def load_env():
+    """Load environment variables from .env file"""
+    env_path = script_dir / '.env'
+    env_vars = {}
+    if env_path.exists():
+        with open(env_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    # Handle both KEY=VALUE and KEY = VALUE formats
+                    if ' = ' in line:
+                        key, value = line.split(' = ', 1)
+                    else:
+                        key, value = line.split('=', 1)
+                    env_vars[key.strip()] = value.strip()
+    return env_vars
+
+env_vars = load_env()
+
 # R2 Configuration
-R2_ACCOUNT_ID = '446aaf2cb9816f2d7955ffb48ee15c42'
-R2_ACCESS_KEY = '15cb493b20d5dca2c8ab0856cddf4693'
-R2_SECRET_KEY = 'ca8c7ee9d6b71bc4ad4fddf20eedb2227f0ddb56fed746ec8886479cc14b1e53'
-R2_BUCKET = 'tamil-movies'
-R2_CUSTOM_DOMAIN = 'cdn.jojoplayer.com'
+R2_ACCOUNT_ID = env_vars.get('r2AccountId', '')
+R2_ACCESS_KEY = env_vars.get('r2AccessKey', '')
+R2_SECRET_KEY = env_vars.get('r2SecretKey', '')
+R2_BUCKET = env_vars.get('r2Bucket', '')
+R2_CUSTOM_DOMAIN = env_vars.get('customDomain', '')
+R2_UPLOAD_PATH = env_vars.get('uploadPath', '/wp-content/uploads/').strip('/')
 R2_ENDPOINT = f'https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com'
 
 
@@ -166,13 +187,13 @@ def upload_to_r2(local_path: Path, filename: str) -> Optional[str]:
         filename: Filename to use in R2 bucket
 
     Returns:
-        CDN URL (https://cdn.jojoplayer.com/wp-content/uploads/filename) or None if failed
+        CDN URL (https://customDomain/uploadPath/filename) or None if failed
     """
     try:
         s3_client = get_r2_client()
 
-        # Upload to R2 with folder path
-        r2_key = f'wp-content/uploads/{filename}'
+        # Upload to R2 with folder path from .env
+        r2_key = f'{R2_UPLOAD_PATH}/{filename}'
         s3_client.upload_file(
             str(local_path),
             R2_BUCKET,
@@ -180,7 +201,7 @@ def upload_to_r2(local_path: Path, filename: str) -> Optional[str]:
             ExtraArgs={'ContentType': 'image/jpeg'}
         )
 
-        cdn_url = f'https://{R2_CUSTOM_DOMAIN}/wp-content/uploads/{filename}'
+        cdn_url = f'https://{R2_CUSTOM_DOMAIN}/{R2_UPLOAD_PATH}/{filename}'
         logger.info(f"✓ Uploaded to R2: {cdn_url}")
         return cdn_url
 
