@@ -608,7 +608,89 @@
 
 ---
 
-## 4. Complete CLI Commands Reference
+## 4. Image Download & R2 Upload Workflow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      IMAGE DOWNLOAD & R2 UPLOAD WORKFLOW                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  TRIGGERED BY: AI Matching (--finder / --finder-all)                       │
+│  MODULE: Core Application/image_downloader.py                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  STEP 1: DOWNLOAD IMAGES                                                   │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │  Sources:                                                            │  │
+│  │  ├── Poster: poster_url from TMDB                                    │  │
+│  │  └── Backdrop: backdrop_url from TMDB                                │  │
+│  │                                                                      │  │
+│  │  Local Storage:                                                      │  │
+│  │  ├── Directory: /home/webseries/Data & Cache/downloads/images/      │  │
+│  │  └── Filename Format: Series-Name-Year-Webseries-Poster/Cover.jpg   │  │
+│  │                                                                      │  │
+│  │  Example:                                                            │  │
+│  │  ├── Input: "Rising with the Wind", 2023                             │  │
+│  │  └── Output: Rising-with-the-Wind-2023-Webseries-Poster.jpg         │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  STEP 2: UPLOAD TO R2 (Cloudflare)                                        │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │  Configuration (from .env):                                         │  │
+│  │  ├── r2AccountId: Cloudflare R2 Account ID                          │  │
+│  │  ├── r2AccessKey: R2 Access Key                                     │  │
+│  │  ├── r2SecretKey: R2 Secret Key                                     │  │
+│  │  ├── r2Bucket: tamil-images                                         │  │
+│  │  ├── customDomain: vitozi.com                                       │  │
+│  │  └── uploadPath: /wp-content/uploads/                               │  │
+│  │                                                                      │  │
+│  │  Upload Process:                                                     │  │
+│  │  ├── Uses boto3 S3 client with R2 endpoint                          │  │
+│  │  ├── Content-Type: image/jpeg                                       │  │
+│  │  └── R2 Key: wp-content/uploads/filename.jpg                       │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  STEP 3: UPDATE DATABASE                                                   │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │  UPDATE series SET                                                  │  │
+│  │    local_poster_path = 'Rising-with-the-Wind-2023-Webseries-Poster.jpg'│
+│  │    local_cover_path = 'Rising-with-the-Wind-2023-Webseries-Cover.jpg'  │
+│  │  WHERE id = 2172                                                     │  │
+│  │                                                                      │  │
+│  │  Note: Stores ONLY filename (not full path or CDN URL)              │  │
+│  │        CDN URL: https://customDomain/uploadPath/filename             │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  CDN URL FORMAT                                                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  Poster: https://vitozi.com/wp-content/uploads/Rising-with-the-Wind-2023-Webseries-Poster.jpg
+  Cover:  https://vitozi.com/wp-content/uploads/Rising-with-the-Wind-2023-Webseries-Cover.jpg
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  FILENAME SANITIZATION                                                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  • Removes special characters: / \ : * ? < > |
+  • Replaces spaces and multiple dashes with single dash
+  • Limits name length to 100 characters
+  • Appends: -Year-Webseries-Poster/Cover.jpg
+```
+
+---
+
+## 5. Complete CLI Commands Reference
 
 ### Main Commands
 
