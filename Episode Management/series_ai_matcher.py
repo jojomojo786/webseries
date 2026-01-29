@@ -39,6 +39,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from db import get_connection
 from logger import get_logger
 
+# Import IMDB metadata fetching functions
+from imdb import (
+    fetch_imdb_details,
+    fetch_tmdb_by_imdb,
+    fetch_tmdb_details,
+    fetch_tmdb_videos,
+    parse_imdb_data,
+    update_series_metadata,
+    search_imdb_by_title
+)
+
 logger = get_logger(__name__)
 
 # Configuration
@@ -481,6 +492,26 @@ def search_tmdb_with_context(title: str, year: int, poster_context: Optional[Dic
         results = data.get('results', [])
         if not results:
             logger.warning(f"No TMDB results found for '{title}' in {year}")
+
+            # FALLBACK: Try IMDB search via RapidAPI
+            logger.info("🔄 Trying IMDB search as fallback...")
+            imdb_result = search_imdb_by_title(title, year)
+
+            if imdb_result:
+                # Use IMDB ID to find TMDB data
+                tmdb_from_imdb = fetch_tmdb_by_imdb(imdb_result['imdb_id'])
+                if tmdb_from_imdb:
+                    logger.info(f"✅ Found via IMDB fallback: {tmdb_from_imdb.get('name') or title} (TMDB ID: {tmdb_from_imdb.get('tmdb_id')})")
+                    # Return in the same format as TMDB search
+                    return {
+                        'id': tmdb_from_imdb.get('tmdb_id'),
+                        'imdb_id': imdb_result['imdb_id'],
+                        'name': imdb_result.get('title'),
+                        'overview': tmdb_from_imdb.get('overview'),
+                        'poster_path': tmdb_from_imdb.get('poster_url'),
+                        'from_imdb_fallback': True
+                    }
+
             return None
 
         # Filter to same year
@@ -608,61 +639,81 @@ def mark_series_failed(series_id: int) -> None:
 
 def update_series_with_tmdb(series_id: int, tmdb_data: Dict) -> bool:
     """
-    Update series table with TMDB data
+    Update series table with comprehensive metadata from IMDB and TMDB
+
+    Fetches:
+    - IMDB details (cast, directors, writers, genres, etc.)
+    - TMDB details (status, networks, production companies, etc.)
+    - TMDB videos (trailer)
 
     Args:
         series_id: Series database ID
-        tmdb_data: TMDB series data
+        tmdb_data: TMDB series data (from search or AI match)
 
     Returns:
         True if update succeeded
     """
-    conn = get_connection()
-    if not conn:
+    tmdb_id = tmdb_data.get('id')
+    imdb_id = tmdb_data.get('imdb_id')
+
+    if not tmdb_id:
+        logger.warning("No TMDB ID in data, skipping comprehensive metadata fetch")
         return False
 
-    cursor = conn.cursor()
+    logger.info(f"📊 Fetching comprehensive metadata for TMDB ID: {tmdb_id}")
 
-    try:
-        # Update with TMDB ID and metadata
-        update_fields = {
-            'tmdb_id': tmdb_data.get('id'),
-            'gpt': 1,  # Mark as successfully matched
-        }
+    # Step 1: Fetch full IMDB details (if we have imdb_id)
+    imdb_details = None
+    if imdb_id:
+        logger.info(f"  🎬 Fetching IMDB details for: {imdb_id}")
+        imdb_details = fetch_imdb_details(imdb_id)
+        if imdb_details:
+            logger.info(f"  ✓ IMDB details fetched")
+        else:
+            logger.warning(f"  ⚠ IMDB details fetch failed for {imdb_id}")
 
-        # Update other fields if they're not set
-        if tmdb_data.get('imdb_id'):
-            update_fields['imdb_id'] = tmdb_data['imdb_id']
-        if tmdb_data.get('name'):
-            update_fields['name'] = tmdb_data['name']
-        if tmdb_data.get('overview'):
-            update_fields['summary'] = tmdb_data['overview'][:500]
-        if tmdb_data.get('vote_average'):
-            update_fields['rating'] = tmdb_data['vote_average']
-        if tmdb_data.get('first_air_date'):
-            update_fields['first_air_date'] = tmdb_data['first_air_date']
-        if tmdb_data.get('poster_path'):
-            update_fields['poster_url'] = f"https://image.tmdb.org/t/p/original{tmdb_data['poster_path']}"
+    # Step 2: Fetch full TMDB details (status, networks, production companies, etc.)
+    logger.info(f"  📺 Fetching TMDB extended details")
+    tmdb_details = fetch_tmdb_details(tmdb_id, 'tv')
+    if tmdb_details:
+        logger.info(f"  ✓ TMDB extended details fetched")
 
-        # Build UPDATE query
-        set_clause = ', '.join([f"{field} = %s" for field in update_fields.keys()])
-        values = list(update_fields.values()) + [series_id]
-        sql = f"UPDATE series SET {set_clause} WHERE id = %s"
+    # Step 3: Fetch trailer from TMDB
+    logger.info(f"  🎥 Fetching trailer")
+    trailer_key = fetch_tmdb_videos(tmdb_id, 'tv')
+    if trailer_key:
+        tmdb_details = tmdb_details or {}
+        tmdb_details['trailer_key'] = trailer_key
+        logger.info(f"  ✓ Trailer found: {trailer_key}")
 
-        cursor.execute(sql, values)
-        conn.commit()
+    # Step 4: Parse all data into our format
+    logger.info(f"  🔄 Parsing comprehensive metadata")
+    metadata = parse_imdb_data(imdb_details, tmdb_data, tmdb_details)
 
-        logger.info(f"✓ Updated series {series_id} with TMDB data")
-        return True
+    # Always include tmdb_id and gpt flag
+    metadata['tmdb_id'] = tmdb_id
+    metadata['gpt'] = 1  # Mark as successfully matched
 
-    except Exception as e:
-        logger.error(f"Error updating series: {e}")
-        conn.rollback()
-        return False
+    # Step 5: Update database with all metadata
+    logger.info(f"  💾 Updating database with {len(metadata)} fields")
+    result = update_series_metadata(series_id, metadata)
 
-    finally:
-        cursor.close()
-        conn.close()
+    if result:
+        # Log what was updated
+        updates = []
+        for key, value in metadata.items():
+            if value is not None and key not in ['gpt']:
+                display_val = str(value)[:50] + '...' if len(str(value)) > 50 else value
+                updates.append(f"    {key}: {display_val}")
+
+        if updates:
+            logger.info(f"✓ Updated series {series_id} with metadata:")
+            for update in updates[:15]:  # Show first 15 fields
+                logger.info(update)
+            if len(updates) > 15:
+                logger.info(f"    ... and {len(updates) - 15} more fields")
+
+    return result
 
 
 def match_series_with_ai(series_id: int, dry_run: bool = False) -> bool:
