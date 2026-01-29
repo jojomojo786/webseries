@@ -74,7 +74,7 @@ def generate_image_filename(series_name: str, year: int, image_type: str) -> str
         image_type: 'poster' or 'cover'
 
     Returns:
-        Filename like: Series-Name-Year-Poster.jpg
+        Filename like: Series-Name-Year-Webseries-Poster.jpg
     """
     sanitized = sanitize_filename(series_name)
     year_str = str(year) if year else "Unknown"
@@ -87,7 +87,7 @@ def generate_image_filename(series_name: str, year: int, image_type: str) -> str
 
     suffix = suffix_map.get(image_type, image_type)
 
-    return f"{sanitized}-{year_str}-{suffix}.jpg"
+    return f"{sanitized}-{year_str}-Webseries-{suffix}.jpg"
 
 
 def download_image(url: str, save_path: Path, timeout: int = 30) -> bool:
