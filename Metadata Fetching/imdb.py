@@ -368,6 +368,10 @@ def parse_imdb_data(imdb_data: dict, tmdb_data: dict = None, tmdb_details: dict 
 
     Returns: dict ready for database update
     """
+    # Handle None imdb_data (when IMDB fetch fails)
+    if imdb_data is None:
+        imdb_data = {}
+
     result = {
         'imdb_id': imdb_data.get('id'),
         'name': imdb_data.get('primaryTitle'),
