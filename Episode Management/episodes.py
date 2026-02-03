@@ -1437,6 +1437,8 @@ def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[
 @click.option('--match-all-series', is_flag=True, help='Auto-match all series without TMDB IDs')
 @click.option('--finder', type=int, help='Match a series using AI poster analysis by series ID')
 @click.option('--finder-all', is_flag=True, help='Match all series without tmdb_id using AI poster analysis')
+@click.option('--finder-seasons', type=int, help='Create seasons for a series using AI torrent analysis by series ID')
+@click.option('--finder-seasons-all', is_flag=True, help='Create seasons for all series with orphaned torrents using AI')
 @click.option('--auto-import', is_flag=True, help='Run full workflow: scan → import → match → fetch-metadata')
 @click.option('--validate', is_flag=True, help='Validate metadata completeness and accuracy')
 @click.option('--cache-stats', is_flag=True, help='Show TMDB cache statistics')
@@ -1450,18 +1452,23 @@ def import_episodes_to_db(episodes: list[dict], dry_run: bool = False) -> tuple[
 @click.option('--missing', is_flag=True, help='Show missing episodes')
 @click.option('--use-ai', is_flag=True, help='Use AI (OpenRouter) to validate uncertain episode numbers')
 @click.option('--processed-dir', default=DEFAULT_PROCESSED_DIR, help='Processed downloads folder')
+@click.option('--download-stills', is_flag=True, help='Download episode stills from TMDB')
+@click.option('--episode-id', type=int, help='Process specific episode by ID (for --download-stills)')
+@click.option('--force-stills', is_flag=True, help='Re-download stills even if they exist')
 @click.pass_context
-def episodes(ctx, scan, import_db, fetch_metadata, match_series, match_all_series, finder, finder_all, auto_import, validate, cache_stats, cache_clear, cache_cleanup, dry_run, series_id, limit, series, season, missing, use_ai, processed_dir):
+def episodes(ctx, scan, import_db, fetch_metadata, match_series, match_all_series, finder, finder_all, finder_seasons, finder_seasons_all, auto_import, validate, cache_stats, cache_clear, cache_cleanup, dry_run, series_id, limit, series, season, missing, use_ai, processed_dir, download_stills, episode_id, force_stills):
     """Find and list episodes from processed downloads"""
 
-    # Default behavior: scan + use-ai + import-db when no action flags provided
+    # Default behavior: scan + use-ai + import-db + download-stills when no action flags provided
     action_flags = [scan, import_db, fetch_metadata, match_series, match_all_series,
-                    finder, finder_all, auto_import, validate, cache_stats, cache_clear, cache_cleanup]
+                    finder, finder_all, finder_seasons, finder_seasons_all, auto_import, validate, cache_stats, cache_clear, cache_cleanup,
+                    download_stills]
     if not any(action_flags):
         scan = True
         use_ai = True
         import_db = True
-        logger.info("Default mode: scan + AI fallback + import to DB")
+        download_stills = True
+        logger.info("Default mode: scan + AI fallback + import to DB + download stills")
 
     # AI validation check
     if use_ai:
@@ -1765,6 +1772,86 @@ def episodes(ctx, scan, import_db, fetch_metadata, match_series, match_all_serie
 
             if dry_run:
                 logger.info("DRY RUN - No changes were made")
+        return
+
+    # Seasons AI matching
+    if finder_seasons or finder_seasons_all:
+        import seasons_ai_matcher
+
+        if finder_seasons:
+            logger.info(f"AI Creating seasons for series ID: {finder_seasons}")
+            result = seasons_ai_matcher.match_seasons_for_series(finder_seasons, dry_run=dry_run)
+
+            if 'error' not in result:
+                click.echo("\n" + "=" * 80)
+                click.echo("SEASONS CREATED")
+                click.echo("=" * 80)
+                click.echo(f"Series: {result.get('series_name', 'Unknown')}")
+                click.echo(f"Torrents found: {result.get('torrents_found', 0)}")
+                click.echo(f"Seasons created: {result.get('seasons_created', 0)}")
+                click.echo(f"Torrents linked: {result.get('torrents_linked', 0)}")
+                click.echo("=" * 80)
+
+                if dry_run:
+                    logger.info("DRY RUN - No changes were made")
+            else:
+                logger.error(f"Error: {result['error']}")
+
+        elif finder_seasons_all:
+            logger.info("AI Creating seasons for all series with orphaned torrents...")
+            results = seasons_ai_matcher.match_all_seasons_with_ai(dry_run=dry_run)
+
+            if 'error' not in results:
+                click.echo("\n" + "=" * 80)
+                click.echo("SEASONS MATCHING SUMMARY")
+                click.echo("=" * 80)
+                click.echo(f"Series with orphans: {results.get('total', 0)}")
+                click.echo(f"Series processed: {results.get('processed', 0)}")
+                click.echo(f"Seasons created: {results.get('seasons_created', 0)}")
+                click.echo(f"Torrents linked: {results.get('torrents_linked', 0)}")
+                click.echo("=" * 80)
+
+                if dry_run:
+                    logger.info("DRY RUN - No changes were made")
+            else:
+                logger.error(f"Error: {results['error']}")
+        return
+
+    # Download episode stills
+    if download_stills:
+        # Import the image downloader module
+        sys.path.insert(0, str(script_dir / "Core Application"))
+        from image_downloader import download_episode_stills
+
+        logger.info("=" * 60)
+        logger.info("DOWNLOADING EPISODE STILLS")
+        logger.info("=" * 60)
+
+        results = download_episode_stills(
+            series_id=series_id,
+            episode_id=episode_id,
+            limit=limit,
+            force=force_stills,
+            dry_run=dry_run
+        )
+
+        if 'error' in results:
+            logger.error(f"Error: {results['error']}")
+            return
+
+        # Display summary
+        logger.info("\n" + "=" * 60)
+        logger.info("DOWNLOAD STILLS SUMMARY")
+        logger.info("=" * 60)
+        logger.info(f"Total episodes: {results.get('total', 0)}")
+        logger.info(f"Downloaded: ✓ {results.get('downloaded', 0)}")
+        logger.info(f"Failed: ✗ {results.get('failed', 0)}")
+        logger.info(f"Skipped: ⊘ {results.get('skipped', 0)}")
+        logger.info(f"Resumed: ↻ {results.get('resumed', 0)}")
+        logger.info("=" * 60)
+
+        if dry_run:
+            logger.info("DRY RUN - No changes were made")
         return
 
     # Scan processed folder (needed for both --scan and --import-db)

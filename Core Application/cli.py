@@ -24,9 +24,11 @@ from logger import setup_logging
 @click.option('--debug', is_flag=True, help='Enable debug logging')
 @click.option('--finder', type=int, help='Match a series using AI poster analysis by series ID')
 @click.option('--finder-all', is_flag=True, help='Match all series without tmdb_id using AI poster analysis')
+@click.option('--finder-seasons', type=int, help='Create seasons for a series using AI torrent analysis by series ID')
+@click.option('--finder-seasons-all', is_flag=True, help='Create seasons for all series with orphaned torrents using AI')
 @click.option('--dry-run', is_flag=True, help='Show what would be done without making changes')
 @click.pass_context
-def cli(ctx, config, debug, finder, finder_all, dry_run):
+def cli(ctx, config, debug, finder, finder_all, finder_seasons, finder_seasons_all, dry_run):
     """Webseries scraper - Download, process, and catalog web series torrents
 
 Features:
@@ -72,6 +74,49 @@ Features:
 
                 if dry_run:
                     click.echo("DRY RUN - No changes were made")
+            ctx.exit()
+
+        # Handle seasons finder options
+        if finder_seasons or finder_seasons_all:
+            import seasons_ai_matcher
+
+            if finder_seasons:
+                click.echo(f"🔍 AI Creating seasons for series ID: {finder_seasons}")
+                result = seasons_ai_matcher.match_seasons_for_series(finder_seasons, dry_run=dry_run)
+
+                if 'error' not in result:
+                    click.echo("\n" + "=" * 80)
+                    click.echo("SEASONS CREATED")
+                    click.echo("=" * 80)
+                    click.echo(f"Series: {result.get('series_name', 'Unknown')}")
+                    click.echo(f"Torrents found: {result.get('torrents_found', 0)}")
+                    click.echo(f"Seasons created: {result.get('seasons_created', 0)}")
+                    click.echo(f"Torrents linked: {result.get('torrents_linked', 0)}")
+                    click.echo("=" * 80)
+
+                    if dry_run:
+                        click.echo("DRY RUN - No changes were made")
+                else:
+                    click.echo(f"✗ Error: {result['error']}")
+
+            elif finder_seasons_all:
+                click.echo("🔍 AI Creating seasons for all series with orphaned torrents...")
+                results = seasons_ai_matcher.match_all_seasons_with_ai(dry_run=dry_run)
+
+                if 'error' not in results:
+                    click.echo("\n" + "=" * 80)
+                    click.echo("SEASONS MATCHING SUMMARY")
+                    click.echo("=" * 80)
+                    click.echo(f"Series with orphans: {results.get('total', 0)}")
+                    click.echo(f"Series processed: {results.get('processed', 0)}")
+                    click.echo(f"Seasons created: {results.get('seasons_created', 0)}")
+                    click.echo(f"Torrents linked: {results.get('torrents_linked', 0)}")
+                    click.echo("=" * 80)
+
+                    if dry_run:
+                        click.echo("DRY RUN - No changes were made")
+                else:
+                    click.echo(f"✗ Error: {results['error']}")
             ctx.exit()
 
 
