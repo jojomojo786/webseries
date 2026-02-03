@@ -290,6 +290,24 @@ def fetch_tmdb_details(tmdb_id: int, media_type: str = 'tv') -> dict | None:
             country_names = [get_country_name(code) for code in origin_countries]
             result['origin_country'] = ', '.join(country_names)
 
+        # Seasons data (for populating seasons table)
+        seasons = data.get('seasons', [])
+        if seasons:
+            result['seasons'] = []
+            for season in seasons:
+                season_number = season.get('season_number', 0)
+                # Skip specials (season 0)
+                if season_number > 0:
+                    result['seasons'].append({
+                        'season_number': season_number,
+                        'episode_count': season.get('episode_count', 0),
+                        'name': season.get('name', ''),
+                        'air_date': season.get('air_date'),
+                        'poster_path': season.get('poster_path'),
+                        'overview': season.get('overview', '')
+                    })
+            logger.info(f"  📺 Found {len(result['seasons'])} season(s) in TMDB data")
+
         return result
 
     except requests.RequestException as e:

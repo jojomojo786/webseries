@@ -640,6 +640,88 @@ def mark_series_failed(series_id: int) -> None:
         conn.close()
 
 
+def create_seasons_from_tmdb(series_id: int, tmdb_id: int, seasons_data: list) -> int:
+    """
+    Create season records from TMDB data
+
+    Args:
+        series_id: Series database ID
+        tmdb_id: TMDB series ID
+        seasons_data: List of season dicts from TMDB
+
+    Returns:
+        Number of seasons created
+    """
+    if not seasons_data:
+        logger.info("  📺 No seasons data from TMDB")
+        return 0
+
+    conn = get_connection()
+    if not conn:
+        return 0
+
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        created = 0
+        updated = 0
+
+        for season in seasons_data:
+            season_number = season.get('season_number')
+            if not season_number or season_number < 1:
+                continue  # Skip specials (season 0)
+
+            # Extract year from air_date
+            year = None
+            air_date = season.get('air_date')
+            if air_date:
+                try:
+                    year = int(air_date[:4])
+                except (ValueError, TypeError):
+                    pass
+
+            episode_count = season.get('episode_count', 0)
+
+            # Check if season exists
+            cursor.execute('''
+                SELECT id FROM seasons
+                WHERE series_id = %s AND season_number = %s
+            ''', (series_id, season_number))
+
+            existing = cursor.fetchone()
+
+            if existing:
+                # Update episode count if different
+                cursor.execute('''
+                    UPDATE seasons
+                    SET episode_count = %s
+                    WHERE id = %s
+                ''', (episode_count, existing['id']))
+                updated += 1
+                logger.debug(f"  Updated season {season_number}: {episode_count} episodes")
+            else:
+                # Create new season
+                cursor.execute('''
+                    INSERT INTO seasons (series_id, season_number, year, episode_count)
+                    VALUES (%s, %s, %s, %s)
+                ''', (series_id, season_number, year, episode_count))
+                created += 1
+                logger.info(f"  ✓ Created season {season_number}: {episode_count} episodes")
+
+        conn.commit()
+        logger.info(f"  📊 Seasons: {created} created, {updated} updated")
+        return created
+
+    except Exception as e:
+        logger.error(f"Error creating seasons: {e}")
+        conn.rollback()
+        return 0
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def update_series_with_tmdb(series_id: int, tmdb_data: Dict) -> bool:
     """
     Update series table with comprehensive metadata from IMDB and TMDB
@@ -716,7 +798,12 @@ def update_series_with_tmdb(series_id: int, tmdb_data: Dict) -> bool:
             if len(updates) > 15:
                 logger.info(f"    ... and {len(updates) - 15} more fields")
 
-        # Step 6: Download poster and backdrop images
+        # Step 6: Create/update seasons from TMDB data
+        if tmdb_details and 'seasons' in tmdb_details:
+            logger.info(f"  📺 Creating/updating seasons from TMDB...")
+            create_seasons_from_tmdb(series_id, tmdb_id, tmdb_details['seasons'])
+
+        # Step 7: Download poster and backdrop images
         logger.info(f"  📥 Downloading images...")
 
         # Fetch original_poster_url from database for fallback validation
